@@ -107,10 +107,6 @@ def should_recompute_relations(state: RelationTriggerState,
     """
     if state.last_relation_frame < 0:
         return True
-    if (cfg.relation_on_grasp
-            and state.last_phase != "grasping"
-            and current_phase == "grasping"):
-        return True
     if (cfg.relation_on_release
             and state.last_phase == "releasing"
             and current_phase != "releasing"):

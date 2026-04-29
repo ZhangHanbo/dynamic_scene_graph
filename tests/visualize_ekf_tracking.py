@@ -34,7 +34,7 @@ import json
 import os
 import sys
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import cv2
 import matplotlib
@@ -507,12 +507,6 @@ class _RelationPipeline:
         self._cfg = trigger_cfg or RelationTriggerConfig()
         self._edges: List[RelationEdge] = []
         self._last_call_summary: Dict[str, Any] = {}
-        # Sticky geometric edges: locked at the grasp transition and
-        # re-emitted every frame until release. Keeps the held set
-        # stable across measurement-update jitter that would otherwise
-        # push tracks outside the geometric height/plane bands.
-        self._sticky_geom_edges: List[RelationEdge] = []
-        self._sticky_held_oid: Optional[int] = None
 
     def _ensure_client(self):
         if self._client is not None:
@@ -556,75 +550,30 @@ class _RelationPipeline:
         """Decide whether to re-call the backend; if so, do it; update
         state. Returns a summary dict (whether fired, n_edges, etc.).
 
-        ``held_oid`` + ``live_tracks`` enable the geometric support
-        fallback at grasp transitions: the LLM's edges are augmented
-        with same-frame geometric edges (parent=track-on-held,
-        child=held) so the held set expands to include physically
-        supported tracks even when the LLM mis-identifies them.
+        Pure backend + EMA pipeline. ``held_oid`` / ``live_tracks`` are
+        accepted for caller-API compatibility but no longer consumed.
         """
-        # Sticky geometric edge management:
-        #   * On release (held_oid is None): clear sticky.
-        #   * On grasp onset / seed change: recompute via the helper
-        #     once. Below the LLM call so we can pass the LLM's raw
-        #     edges as a directional hint — the geometric helper
-        #     defers to the LLM when the LLM has spoken about the
-        #     held seed.
-        #   * Otherwise: re-emit the locked edges every frame.
-        # This avoids re-running the helper against drifted positions
-        # that would shrink the held set over time.
-        if held_oid is None:
-            self._sticky_geom_edges = []
-            self._sticky_held_oid = None
-        need_geom_recompute = (
-            held_oid is not None
-            and (not self._sticky_geom_edges
-                 or self._sticky_held_oid != int(held_oid))
-        )
-
-        def _recompute_sticky(llm_raw_edges: Optional[List[RelationEdge]]):
-            from pose_update.geometric_support import (
-                detect_support_edges_at_grasp,
-            )
-            self._sticky_geom_edges = detect_support_edges_at_grasp(
-                held_oid=int(held_oid), live_tracks=live_tracks or {},
-                excluded_labels=("bottle",),
-                existing_edges=llm_raw_edges or None,
-            )
-            self._sticky_held_oid = int(held_oid)
-
-        if need_geom_recompute:
-            # Tentative: compute now without LLM context. If the LLM
-            # call below succeeds, we'll recompute with its edges
-            # (which can override → no edges if LLM has already
-            # spoken about the held seed).
-            _recompute_sticky(None)
-        geom_edges = list(self._sticky_geom_edges)
+        del held_oid, live_tracks  # geometric fallback removed
 
         fired = should_recompute_relations(
             self._state, current_phase, current_oids, frame, self._cfg)
         if not fired:
-            # LLM not re-called — re-feed sticky geometric edges so the
-            # EMA keeps them above threshold between triggers.
-            if geom_edges:
-                self._edges = self._filter.update(geom_edges)
             self._last_call_summary = {
                 "fired": False, "frame": frame,
-                "n_geom_edges": len(geom_edges),
                 "n_filtered_edges": len(self._edges),
             }
             return self._last_call_summary
 
         client = self._ensure_client()
         if client is None:
-            # Backend disabled — geometric only.
-            self._edges = self._filter.update(geom_edges)
+            # Backend disabled — clear edges via empty raw frame.
+            self._edges = self._filter.update([])
             self._state.last_relation_frame = frame
             self._state.last_phase = current_phase
             self._state.known_oids_before_step = set(current_oids)
             self._last_call_summary = {
                 "fired": True, "backend": "none",
                 "frame": frame,
-                "n_geom_edges": len(geom_edges),
                 "n_filtered_edges": len(self._edges),
             }
             return self._last_call_summary
@@ -659,14 +608,13 @@ class _RelationPipeline:
             seen.add(int(oid))
 
         if len(oid_list) < 2:
-            # LLM needs ≥2 oids — but geometric edges still apply.
-            self._edges = self._filter.update(geom_edges)
+            # Backend needs ≥2 oids; let the EMA decay this frame.
+            self._edges = self._filter.update([])
             self._state.last_relation_frame = frame
             self._state.last_phase = current_phase
             self._state.known_oids_before_step = set(current_oids)
             self._last_call_summary = {
                 "fired": True, "n_oids": len(oid_list),
-                "n_geom_edges": len(geom_edges),
                 "n_filtered_edges": len(self._edges),
                 "frame": frame, "skipped": "too_few_oids_for_llm",
             }
@@ -690,14 +638,12 @@ class _RelationPipeline:
             set_relation_context(None)
 
         if p_parent is None:
-            # LLM failed — geometric edges still drive the EMA.
-            self._edges = self._filter.update(geom_edges)
+            self._edges = self._filter.update([])
             self._state.last_relation_frame = frame
             self._state.last_phase = current_phase
             self._state.known_oids_before_step = set(current_oids)
             self._last_call_summary = {
                 "fired": True, "frame": frame,
-                "n_geom_edges": len(geom_edges),
                 "n_filtered_edges": len(self._edges),
                 "skipped": "detect_returned_none",
             }
@@ -712,35 +658,16 @@ class _RelationPipeline:
                 s = float(p_parent[i, j])
                 if s < self.score_threshold:
                     continue
-                raw.append(RelationEdge(parent=oid_list[i],
-                                         child=oid_list[j],
+                # LLM convention: "i is parent of j" = "j rests on i".
+                # `expand_held_with_relations` convention: parent =
+                # supported, child = supporter. So we map LLM-i
+                # (the supporter) to expand-child, and LLM-j (the
+                # supported) to expand-parent. Without this swap, the
+                # held-set expansion walks edges in the wrong direction
+                # and never propagates the held seed to its riders.
+                raw.append(RelationEdge(parent=oid_list[j],
+                                         child=oid_list[i],
                                          relation_type="on", score=s))
-
-        # LLM-aware geometric recompute: if grasp transition just fired
-        # (i.e. need_geom_recompute was True), redo the helper now with
-        # the LLM's raw edges. The helper skips emission when the LLM
-        # has already spoken about the held seed → avoids the
-        # circular-edge "(seed on X) AND (X on seed)" problem.
-        if need_geom_recompute:
-            _recompute_sticky(raw)
-            geom_edges = list(self._sticky_geom_edges)
-
-        # Merge geometric edges with LLM raw. If a key collides, take
-        # the max score.
-        n_geom = 0
-        seen_keys = {(e.parent, e.child, e.relation_type): i
-                      for i, e in enumerate(raw)}
-        for e in geom_edges:
-            key = (e.parent, e.child, e.relation_type)
-            if key in seen_keys:
-                raw[seen_keys[key]] = RelationEdge(
-                    parent=e.parent, child=e.child,
-                    relation_type=e.relation_type,
-                    score=max(raw[seen_keys[key]].score, e.score),
-                )
-            else:
-                raw.append(e)
-                n_geom += 1
 
         self._edges = self._filter.update(raw)
         self._state.last_relation_frame = frame
@@ -751,7 +678,6 @@ class _RelationPipeline:
             "backend": self.backend,
             "n_oids": n,
             "n_raw_edges": len(raw),
-            "n_geom_edges": int(n_geom),
             "n_filtered_edges": len(self._edges),
             "edges": [(e.parent, e.child, e.relation_type, e.score)
                       for e in self._edges],
@@ -761,6 +687,71 @@ class _RelationPipeline:
     @property
     def edges(self) -> List[RelationEdge]:
         return list(self._edges)
+
+    def remap_after_merges(self,
+                            merges: List[Dict[str, Any]]) -> None:
+        """Rewrite EMA keys + filtered edges so dropped oids are
+        replaced by their keep counterparts. Without this, after a
+        self-merge the relation graph keeps referencing the dropped
+        oid, ``expand_held_with_relations`` fails to find any
+        ``child=keep_oid`` edge, and the held set collapses to just
+        the seed on the next frame.
+        """
+        if not merges:
+            return
+        drop_to_keep: Dict[int, int] = {}
+        for m in merges:
+            keep = m.get("keep_oid")
+            drop = m.get("drop_oid")
+            if keep is None or drop is None:
+                continue
+            try:
+                drop_to_keep[int(drop)] = int(keep)
+            except (TypeError, ValueError):
+                continue
+        if not drop_to_keep:
+            return
+
+        def _resolve(o: int) -> int:
+            seen: Set[int] = set()
+            while o in drop_to_keep and o not in seen:
+                seen.add(o)
+                o = drop_to_keep[o]
+            return o
+
+        # Rewrite EMA keys (collapse self-loops, dedup with max).
+        new_ema: Dict[tuple, float] = {}
+        for (p, c, t), val in self._filter._ema.items():
+            try:
+                p2, c2 = _resolve(int(p)), _resolve(int(c))
+            except (TypeError, ValueError):
+                continue
+            if p2 == c2:
+                continue
+            key = (p2, c2, t)
+            new_ema[key] = max(val, new_ema.get(key, 0.0))
+        self._filter._ema = new_ema
+
+        # Rewrite the currently-emitted edges (consumed by next
+        # frame's expansion).
+        new_edges: List[RelationEdge] = []
+        seen_keys: Set[tuple] = set()
+        for e in self._edges:
+            try:
+                p2, c2 = _resolve(int(e.parent)), _resolve(int(e.child))
+            except (TypeError, ValueError):
+                continue
+            if p2 == c2:
+                continue
+            key = (p2, c2, e.relation_type)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            new_edges.append(RelationEdge(
+                parent=p2, child=c2,
+                relation_type=e.relation_type,
+                score=e.score))
+        self._edges = new_edges
 
 
 def _load_detection_json(path: str) -> List[Dict[str, Any]]:
@@ -1146,6 +1137,8 @@ class InstrumentedTracker:
              phase: str = "idle",
              T_bg: Optional[np.ndarray] = None,
              held_oids: Optional[set] = None,
+             held_seed: Optional[int] = None,
+             relation_edges: Optional[Iterable] = None,
              T_bc: Optional[np.ndarray] = None
              ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """One frame of base-frame Bernoulli-EKF tracking.
@@ -1202,8 +1195,15 @@ class InstrumentedTracker:
         # Stashed for `_candidate_near_live_track` (births' proximity gate
         # uses T_we for the held label) and the matched-update loop
         # (Euclidean prefilter on held-track measurements).
-        self._held_oid_now: Optional[int] = (next(iter(held_oids))
-                                              if held_oids else None)
+        # Prefer the explicit `held_seed` (the directly-grasped oid)
+        # when supplied — `held_oids` is the relation-expanded set and
+        # `next(iter(set))` is non-deterministic (it picked an apple
+        # instead of the tray at fr 519, breaking self-merge protection).
+        if held_seed is not None and int(held_seed) in held_oids:
+            self._held_oid_now: Optional[int] = int(held_seed)
+        else:
+            self._held_oid_now = (next(iter(held_oids))
+                                  if held_oids else None)
         if self._held_oid_now is not None and T_bg is not None:
             self._held_T_we_now = T_wb @ np.asarray(T_bg, dtype=np.float64)
         else:
@@ -1321,6 +1321,11 @@ class InstrumentedTracker:
         # block via `[t_bc]_x · R_rot · [t_bc]_x^T`, which dominates
         # for any non-trivial t_bc).  Gate / cost then work as usual
         # with `gate_mode='trans'`, `cost_d2_mode='trans'/'sum'`.
+        # 2 cm centroid std absorbs the perception-side mask
+        # boundary noise that free tracks (cup, bottle, free apples)
+        # produce as the gripper passes overhead. Held-track motion
+        # is owned by the rigid-attach predict, not Kalman gain
+        # magnitude, so a looser R doesn't slow them down.
         _R_CENT_CAM = np.diag([(0.02) ** 2] * 3)
         _ROT_PAD = np.eye(3, dtype=np.float64) * 1e6
         def _centroid_innov(oid: int,
@@ -1632,6 +1637,7 @@ class InstrumentedTracker:
                 # `lift_measurement_base` (which Ad-couples the huge
                 # R_rot into the translation block).
                 centroid_cam = det["_centroid_cam"]
+                # 2 cm centroid std (matched to _R_CENT_CAM).
                 R_cam_3D = np.diag([(0.02) ** 2] * 3)
                 stats3 = self.state.innovation_stats_centroid_3d(
                     oid, centroid_cam, R_cam=R_cam_3D)
@@ -1707,6 +1713,7 @@ class InstrumentedTracker:
                 self.state.update_observation_centroid(
                     oid=oid,
                     centroid_cam=det["_centroid_cam"],
+                    # 2 cm std (matched to assoc R_cam).
                     R_cam=np.diag([(0.02) ** 2] * 3),
                     huber_w=w, P_max=self.cfg.P_max,
                 )
@@ -1949,8 +1956,32 @@ class InstrumentedTracker:
         # The held oid (when set) is protected — it is always chosen as
         # the keeper in any pair it participates in, so the held
         # identity is preserved across self-merges.
-        _held_for_merge = next(iter(held_oids), None) if held_oids else None
-        dbg["self_merges"] = self._self_merge_pass(held_id=_held_for_merge)
+        # Protect the directly-grasped seed, not an arbitrary member of
+        # the relation-expanded held set. ``next(iter(set))`` is non-
+        # deterministic — at fr 519 it picked an apple instead of the
+        # tray, so the merge dropped the actual held seed and broke
+        # rigid attachment for every transitive held member.
+        _held_for_merge = self._held_oid_now
+        # Build protected-pairs set from the current scene graph: any
+        # two oids the LLM links via "in"/"on" are distinct physical
+        # objects and must NOT collapse via self-merge, even if their
+        # centroids drift to within `self_merge_trans_m`.
+        protected_pairs: Set[Tuple[int, int]] = set()
+        for e in (relation_edges or ()):
+            rel = getattr(e, "relation_type", None)
+            if rel not in ("in", "on"):
+                continue
+            try:
+                a, b = int(e.parent), int(e.child)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if a == b:
+                continue
+            protected_pairs.add((min(a, b), max(a, b)))
+        dbg["self_merge_protected_pairs"] = sorted(protected_pairs)
+        dbg["self_merges"] = self._self_merge_pass(
+            held_id=_held_for_merge,
+            protected_pairs=protected_pairs)
 
         dbg["post_update_tracks"] = self._capture_tracks()
 
@@ -1969,6 +2000,7 @@ class InstrumentedTracker:
     # ────────── self-merge ──────────
     def _self_merge_pass(self,
                           held_id: Optional[int] = None,
+                          protected_pairs: Optional[Set[Tuple[int, int]]] = None,
                           ) -> List[Dict[str, Any]]:
         """Find pairs of same-label tracks whose belief means are within
         `self_merge_trans_m` metres of each other and merge them via
@@ -1985,6 +2017,11 @@ class InstrumentedTracker:
         `held_id`: if provided, this oid is *always* chosen as the
         keeper in any pair it's in, so its identity (and rigid-
         attachment kinematics) survives the merge.
+
+        `protected_pairs`: unordered ``(min_oid, max_oid)`` tuples that
+        the scene graph asserts are distinct physical objects (e.g. an
+        apple resting on a tray). Such pairs are skipped — they should
+        never collapse regardless of how close the centroids drift.
         """
         cfg = self.cfg
         gate_m = float(getattr(cfg, "self_merge_trans_m", 0.0))
@@ -2007,6 +2044,13 @@ class InstrumentedTracker:
             for j in range(i + 1, len(oids)):
                 oj = oids[j]
                 if self.object_labels[oj] != label_i:
+                    continue
+                # Scene-graph protection: pairs the LLM asserts are
+                # related (apple-on-tray etc.) are distinct physical
+                # objects and must not collapse — drop the pair from
+                # the candidate list before we even check distance.
+                if (protected_pairs is not None
+                        and (min(oi, oj), max(oi, oj)) in protected_pairs):
                     continue
                 pe_j = beliefs[oj]
                 if pe_j is None:
@@ -2636,6 +2680,7 @@ def _dump_frame_json(out_path: str,
         "centroid_dropped": dbg.get("centroid_dropped", []),
         "prunes": dbg.get("pruned", []),
         "self_merges": dbg.get("self_merges", []),
+        "self_merge_protected_pairs": dbg.get("self_merge_protected_pairs", []),
         "visibility": {int(o): float(v)
                         for o, v in dbg.get("visibility", {}).items()},
     }
@@ -3549,6 +3594,7 @@ def _plot_events_list(ax, dbg, detections=None):
     line2_indent = 0.06
     line2_drop = 0.026
     max_events = 15
+    n_drawn_events = 0
     for i, (_k, l1, l2, col) in enumerate(events[:max_events]):
         y1 = y_start - i * y_step_event
         if y1 < 0.04:
@@ -3559,6 +3605,52 @@ def _plot_events_list(ax, dbg, detections=None):
         ax.text(0.03 + line2_indent, y1 - line2_drop, l2,
                 transform=ax.transAxes,
                 fontsize=7, color=col, family="monospace", va="top")
+        n_drawn_events += 1
+
+    # ── Relations block (LLM scene graph) ─────────────────────────
+    # Build per-oid "supporters" map from dbg["relations"].
+    # Convention: parent = supported, child = supporter — so the
+    # children of edges with our parent are the things this oid sits on.
+    supporters: Dict[int, List[int]] = {}
+    for rel in dbg.get("relations", []) or []:
+        try:
+            p_oid = int(rel["parent"])
+            c_oid = int(rel["child"])
+            rt = str(rel.get("type", "on"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if rt not in ("on", "in"):
+            continue
+        supporters.setdefault(p_oid, []).append(c_oid)
+
+    if supporters:
+        rel_color = (0.10, 0.45, 0.50)   # dark teal
+        # Start the block one event-row below the last event.
+        y_rel = max(0.04 + 0.05,
+                    y_start - n_drawn_events * y_step_event - 0.015)
+        # Title divider.
+        ax.text(0.03, y_rel,
+                "── Relations (LLM) ──",
+                transform=ax.transAxes,
+                fontsize=8, color=rel_color, family="monospace",
+                va="top", weight="bold")
+        y_rel -= 0.034
+        # One line per supported oid (sorted).
+        max_rel_lines = 8
+        rel_lines_drawn = 0
+        for p_oid in sorted(supporters.keys()):
+            if rel_lines_drawn >= max_rel_lines or y_rel < 0.02:
+                break
+            kids = sorted(set(supporters[p_oid]))
+            kids_str = ", ".join(str(k) for k in kids)
+            lbl = label_by_oid.get(p_oid, "?")
+            ax.text(0.03, y_rel,
+                    f"oid {p_oid:>3} ({lbl})  on: {kids_str}",
+                    transform=ax.transAxes,
+                    fontsize=8, color=rel_color, family="monospace",
+                    va="top")
+            y_rel -= 0.034
+            rel_lines_drawn += 1
 
 
 def render_frame(rgb: np.ndarray,
@@ -3858,10 +3950,15 @@ def main():
             T_bc=T_bc_now,
             T_bg=T_bg_now,
             held_oids=held_oids,
+            held_seed=held_seed,
+            relation_edges=relation_pipeline.edges,
         )
         # Re-map held_obj_id if self-merge renamed it.
         grip_inferrer.apply_merges(dbg.get("self_merges", []))
         gripper_state["held_obj_id"] = grip_inferrer._held_obj_id
+        # Also remap the relation EMA so next frame's held-set
+        # expansion still finds the right edges.
+        relation_pipeline.remap_after_merges(dbg.get("self_merges", []))
         dbg["gripper_state"] = dict(gripper_state)
         # Expose the expanded held set + the relation snapshot for the
         # state JSON / mask panel highlight.

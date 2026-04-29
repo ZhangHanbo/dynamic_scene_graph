@@ -605,17 +605,35 @@ class GaussianState:
         mu_new = b.mu_bo.copy()
         mu_new[:3, 3] = b.mu_bo[:3, 3] + delta_t_base
 
-        # Joseph cov update on the translation block only. Cross-cov
-        # and rotation blocks unchanged: cross-coupling rotation
-        # correction was the very thing producing the drift sign-flip;
-        # leaving it out is the standard treatment for a translation-
-        # only measurement when the cross-cov is small.
+        # Joseph cov update on the translation block only. We zero the
+        # cross-covariance with rotation: a translation-only
+        # observation gives no information about rotation (R_rot was
+        # taken as ∞ in the matched-update loop), so treating the two
+        # blocks as decoupled after the update is the honest
+        # expression of that. Keeping the cross-cov from before the
+        # update — as the previous version did — let cov drift to
+        # indefinite over many sequential updates because P_tt was
+        # shrunk by Kalman while P_tr was not, breaking the Schur
+        # complement P_rr − P_rt^T P_tt⁻¹ P_rt ⪰ 0.
         I3 = np.eye(3)
         IK = I3 - K_tt
         P_tt_post = IK @ P_tt @ IK.T + K_tt @ R_bo_tt @ K_tt.T
         P_tt_post = 0.5 * (P_tt_post + P_tt_post.T)
-        cov_post = cov.copy()
+        cov_post = np.zeros((6, 6), dtype=np.float64)
         cov_post[:3, :3] = P_tt_post
+        cov_post[3:, 3:] = cov[3:, 3:]
+        cov_post = 0.5 * (cov_post + cov_post.T)
+
+        # Belt-and-suspenders: clip any tiny negative eigenvalue
+        # introduced by floating-point noise.
+        try:
+            evals, evecs = np.linalg.eigh(cov_post)
+            if (evals < 0).any():
+                evals = np.clip(evals, 0.0, None)
+                cov_post = evecs @ np.diag(evals) @ evecs.T
+                cov_post = 0.5 * (cov_post + cov_post.T)
+        except np.linalg.LinAlgError:
+            pass
 
         if P_max is not None:
             from pose_update.object_belief import saturate_covariance
