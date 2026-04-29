@@ -1,0 +1,404 @@
+{
+  "frames": [
+    {
+      "frame": 260,
+      "n_tracks": 0,
+      "n_match": 0,
+      "n_det": 1,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": null,
+      "n_relations": 0,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 280,
+      "n_tracks": 0,
+      "n_match": 0,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": null,
+      "n_relations": 0,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 300,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 6,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 1.938281859033092e-05,
+      "n_relations": 3,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 320,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.171919994032706e-05,
+      "n_relations": 3,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 340,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.2551601212797972e-05,
+      "n_relations": 3,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 360,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.2945019741656994e-05,
+      "n_relations": 3,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 380,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.3156782961443608e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 400,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.327902016877062e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 420,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.3352809253537665e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 440,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.3398522760304986e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 460,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.3427433225987556e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 480,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": null,
+      "phase": "idle",
+      "used": [],
+      "min_eigenvalue": 2.3445899237499584e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 488,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "grasping",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.345129105775843e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 500,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.3457763732370717e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 510,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.346201943702988e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 515,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.3463863529567946e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 518,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.4051879230986825e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 520,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.4343548459841488e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 530,
+      "n_tracks": 5,
+      "n_match": 4,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.4997909194365457e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 540,
+      "n_tracks": 5,
+      "n_match": 5,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.4999814412212445e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 560,
+      "n_tracks": 5,
+      "n_match": 4,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.497596704039617e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 580,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 3,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 0.0001299876201279043,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 600,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 3,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 0.00016778985317741115,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 620,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 3,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 0.00010510050431592763,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 640,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 3,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 6.151542235601154e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 660,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 3.3212609369029317e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 680,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 5,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.6268989559575303e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    },
+    {
+      "frame": 698,
+      "n_tracks": 5,
+      "n_match": 3,
+      "n_det": 4,
+      "held_seed": 4,
+      "phase": "holding",
+      "used": [
+        1,
+        3,
+        4
+      ],
+      "min_eigenvalue": 2.1491154014164142e-05,
+      "n_relations": 2,
+      "n_self_merges": 0
+    }
+  ]
+}

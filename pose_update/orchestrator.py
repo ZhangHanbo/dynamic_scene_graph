@@ -1336,7 +1336,10 @@ class TwoTierOrchestrator:
         # absorb within a single frame (SAM2 mask splits, re-prompts, etc.).
         self._self_merge_pass(held_id)
 
-    def _self_merge_pass(self, held_id: Optional[int]) -> List[Dict[str, Any]]:
+    def _self_merge_pass(self,
+                          held_id: Optional[int],
+                          protected_pairs: Optional[Set[Tuple[int, int]]] = None,
+                          ) -> List[Dict[str, Any]]:
         """Fuse same-label tracks whose world-frame means are within
         `self_merge_trans_m` metres of each other.
 
@@ -1358,9 +1361,15 @@ class TwoTierOrchestrator:
 
         Args:
             held_id: current upstream-reported held object id (never dropped).
+            protected_pairs: unordered ``(min_oid, max_oid)`` tuples that
+                the relation graph asserts are distinct physical objects
+                (e.g. an apple resting on a tray). Such pairs are
+                skipped — they should never collapse regardless of how
+                close their centroids drift.
 
         Returns:
-            List of {keep_oid, drop_oid, dist_m} records for diagnostics.
+            List of {keep_oid, drop_oid, dist_m, d2_trans} records for
+            diagnostics.
         """
         cfg = self.bernoulli
         gate_m = float(getattr(cfg, "self_merge_trans_m", 0.0))
@@ -1384,20 +1393,33 @@ class TwoTierOrchestrator:
                 oj = oids[j]
                 if self.object_labels[oj] != label_i:
                     continue
+                # Scene-graph protection: relation-asserted pairs must
+                # not collapse, even if their world means drift to
+                # within `self_merge_trans_m`.
+                if (protected_pairs is not None
+                        and (min(oi, oj), max(oi, oj)) in protected_pairs):
+                    continue
                 pe_j = beliefs[oj]
                 if pe_j is None:
                     continue
-                d = float(np.linalg.norm(
-                    np.asarray(pe_j.T)[:3, 3]
-                    - np.asarray(pe_i.T)[:3, 3]))
+                nu_t = (np.asarray(pe_j.T)[:3, 3]
+                         - np.asarray(pe_i.T)[:3, 3])
+                d = float(np.linalg.norm(nu_t))
                 if d > gate_m:
                     continue
-                candidates.append((d, oi, oj))
+                # Diagnostic d²_trans: nu^T (P_i + P_j)^-1 nu.
+                S_tt = (np.asarray(pe_i.cov)[:3, :3]
+                         + np.asarray(pe_j.cov)[:3, :3])
+                try:
+                    d2_t = float(nu_t @ np.linalg.solve(S_tt, nu_t))
+                except np.linalg.LinAlgError:
+                    d2_t = float("nan")
+                candidates.append((d, d2_t, oi, oj))
         candidates.sort(key=lambda t: t[0])
 
         merges: List[Dict[str, Any]] = []
         absorbed: Set[int] = set()
-        for d, oi, oj in candidates:
+        for d, d2_t, oi, oj in candidates:
             if oi in absorbed or oj in absorbed:
                 continue
             # Keep/drop decision.
@@ -1468,6 +1490,7 @@ class TwoTierOrchestrator:
                 "keep_oid": int(keep),
                 "drop_oid": int(drop),
                 "dist_m": float(d),
+                "d2_trans": float(d2_t),
             })
         return merges
 

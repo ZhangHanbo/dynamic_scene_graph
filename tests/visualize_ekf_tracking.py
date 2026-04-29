@@ -48,7 +48,7 @@ from scipy.spatial.transform import Rotation
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.association import hungarian_associate, oracle_associate
+from pose_update.association import hungarian_associate
 from pose_update.bernoulli import (
     r_predict, r_assoc_update_loglik, r_miss_update, r_birth,
 )
@@ -87,6 +87,20 @@ K_DEFAULT = np.array([
     [0.0, 554.3827, 240.5],
     [0.0, 0.0,     1.0],
 ], dtype=np.float64)
+
+# Centroid measurement noise (camera-frame). 2 cm std absorbs the
+# perception-side mask boundary noise that free tracks (cup, bottle,
+# free apples) produce; held tracks are anchored by rigid-attach
+# predict so don't depend on Kalman gain magnitude. Used at three
+# call sites (Hungarian d², matched-update innovation diagnostics,
+# the actual EKF update); same value everywhere keeps gate / cost /
+# update consistent.
+_CENTROID_R_CAM_STD_M = 0.02
+_R_CENT_CAM_3D = np.diag([_CENTROID_R_CAM_STD_M ** 2] * 3)
+# Rotation-decoupling: centroid measurement carries no rotation info,
+# so the 6D-shaped innovation pads the rotation block with ∞ so it
+# falls out of every solve.
+_ROTATION_DECOUPLE_VAR = 1e6
 
 # Per-frame slack covariance for the rigid-attachment predict (grip
 # slip / deformation). Tiny on top of Ad·P·Adᵀ.
@@ -214,544 +228,46 @@ def _load_gripper_widths(path: str) -> Optional[Dict[int, float]]:
     return out if out else None
 
 
+from pose_update.gripper_state import GripperPhaseTracker as _GripperPhaseTracker  # noqa: E402
+
 class _GripperStateInferrer:
-    """Infer {phase, held_obj_id} per frame from proprioception with an
-    adaptive transition window.
+    """Driver-side shim around :class:`pose_update.gripper_state.GripperPhaseTracker`.
 
-    Four phases form a cycle:
-
-        idle ──(open→closed)──▶ grasping ──(stable+timer)──▶ holding
-                                                                 │
-        idle ◀──(stable+timer)── releasing ◀──(closed→open)──────┘
-
-    `grasping` and `releasing` are the *transition windows* during which
-    the rigid-attachment motion model can't be trusted (gripper is
-    physically moving and/or the held object is still settling in the
-    grip). They begin at the binary threshold-crossing of the finger
-    width, and they persist until BOTH:
-
-      a) at least ``min_transition_frames`` (=5) frames have elapsed,
-         AND
-      b) the gripper width has stabilized — recent ``history_size``
-         (=5) frames span less than ``motion_threshold_m`` (=1 cm).
-
-    During those windows the tracker should skip the rigid-attachment
-    mean predict for the held track and lean on measurement updates;
-    Σ inflates via the large `_Q_GRASPING_RELEASING` so the gate stays
-    permissive.
-
-    Held identity is assigned at the first frame of `grasping` by
-    nearest-track-to-EE (within `grasp_radius_m`); persists through
-    holding; cleared at the first frame of `idle` (after the releasing
-    window completes). Self-merges remap it via `apply_merges`.
+    The full FSM lives in ``pose_update/gripper_state.py``. This shim
+    wraps the production class with the test driver's tracker-coupling
+    (it constructs an ``InstrumentedTrackerState`` adapter on each
+    ``step``) and exposes the legacy ``_held_obj_id`` attribute name
+    used by the rest of this driver.
     """
-
-    def __init__(self,
-                 closed_width_m: float = 0.025,
-                 open_width_m: float = 0.040,
-                 grasp_radius_m: float = 0.30,
-                 history_size: int = 5,
-                 motion_threshold_m: float = 0.01,
-                 min_transition_frames: int = 5,
-                 min_inside_count: int = 20,
-                 detector: "Optional[GraspOwnerDetector]" = None):
-        self.closed_width = closed_width_m
-        self.open_width = open_width_m
-        self.grasp_radius = grasp_radius_m
-        self.history_size = int(history_size)
-        self.motion_threshold = float(motion_threshold_m)
-        self.min_transition_frames = int(min_transition_frames)
-        self.min_inside_count = int(min_inside_count)
-        # Robot-agnostic grasp-owner detector (Signal 1 + 2 + fallback).
-        # If None, falls back to the legacy nearest-track-to-EE rule.
-        self.detector = detector
-        self._closed_prev: Optional[bool] = None
-        self._held_obj_id: Optional[int] = None
-        self._phase_prev: str = "idle"
-        self._transition_remaining: int = 0
-        self._width_history: List[float] = []
-
-    def apply_merges(self, merges: List[Dict[str, Any]]) -> None:
-        """Remap held_obj_id after self-merges.
-
-        If the held oid was the drop in any merge, switch to the keeper.
-        Called after step() returns so subsequent frames track the
-        preserved identity.
-        """
-        if self._held_obj_id is None or not merges:
-            return
-        for m in merges:
-            drop = m.get("drop_oid")
-            keep = m.get("keep_oid")
-            if drop is None or keep is None:
-                continue
-            if int(drop) == int(self._held_obj_id):
-                self._held_obj_id = int(keep)
-
-    def step(self,
-             width: Optional[float],
-             tracker: "InstrumentedTracker",
-             T_wb: np.ndarray,
-             T_bg: Optional[np.ndarray],
-             detections: Optional[List[Dict[str, Any]]] = None,
-             depth: Optional[np.ndarray] = None,
-             K: Optional[np.ndarray] = None,
-             T_bc: Optional[np.ndarray] = None,
-             joints: Optional[Dict[str, Any]] = None,
-             ) -> Dict[str, Any]:
-        """Return {phase, held_obj_id, gripper_width_m, is_moving, held_pid, held_grasp_count}.
-
-        ``detections / depth / K / T_bc`` are needed only at grasp onset
-        to compute the geometric grasp selector. ``joints`` is the
-        raw per-frame joint dict (e.g. from ``joints_pose.json``) — when
-        provided, the detector's gripper geometry can call
-        ``state_from_joints`` directly. If any is missing the selector
-        falls back to nearest-track-to-EE.
-        """
-        self._joints_now = joints
-        if width is None:
-            # No gripper data this frame → carry over previous phase to
-            # avoid spurious transitions from missing input.
-            return {"phase": self._phase_prev,
-                    "held_obj_id": self._held_obj_id,
-                    "gripper_width_m": None,
-                    "is_moving": None}
-
-        # Sliding window for the motion/stability test.
-        self._width_history.append(float(width))
-        if len(self._width_history) > self.history_size:
-            self._width_history.pop(0)
-
-        # Seed on first observation.
-        if self._closed_prev is None:
-            self._closed_prev = width < self.closed_width
-            self._phase_prev = "holding" if self._closed_prev else "idle"
-            return {"phase": self._phase_prev,
-                    "held_obj_id": None,
-                    "gripper_width_m": width,
-                    "is_moving": False}
-
-        # Hysteresis on the binary closed/open state.
-        if self._closed_prev:
-            is_closed = width < self.open_width
-        else:
-            is_closed = width < self.closed_width
-
-        # Stability test: are the last `history_size` widths within
-        # `motion_threshold` of each other?
-        if len(self._width_history) >= 2:
-            spread = max(self._width_history) - min(self._width_history)
-            is_moving = spread > self.motion_threshold
-        else:
-            is_moving = False
-
-        # Decrement the min-transition timer (used to keep us in
-        # `grasping`/`releasing` for at least `min_transition_frames`).
-        if self._transition_remaining > 0:
-            self._transition_remaining -= 1
-
-        just_closed = (not self._closed_prev) and is_closed
-        just_opened = self._closed_prev and (not is_closed)
-
-        prev_phase = self._phase_prev
-        new_phase = prev_phase
-
-        # Selection of held_obj_id at the grasp moment. Geometric
-        # containment + optional perception grasp_owner; falls back to
-        # nearest-track-to-EE.
-        held_pid_now: Optional[Any] = None
-        held_count_now: int = 0
-        if prev_phase == "idle":
-            if just_closed:
-                (self._held_obj_id, held_pid_now, held_count_now
-                 ) = self._select_held_oid_at_grasp(
-                    tracker, T_wb, T_bg, T_bc, detections, depth, K, width)
-                new_phase = "grasping"
-                self._transition_remaining = self.min_transition_frames
-                self._width_history = [float(width)]
-                is_moving = True
-
-        elif prev_phase == "grasping":
-            if just_opened:
-                # Premature release before the grasp completed.
-                new_phase = "releasing"
-                self._transition_remaining = self.min_transition_frames
-                self._width_history = [float(width)]
-                is_moving = True
-            elif self._transition_remaining == 0 and not is_moving:
-                new_phase = "holding"
-
-        elif prev_phase == "holding":
-            if just_opened:
-                new_phase = "releasing"
-                self._transition_remaining = self.min_transition_frames
-                self._width_history = [float(width)]
-                is_moving = True
-
-        elif prev_phase == "releasing":
-            if just_closed:
-                # Re-grasp before release completed.
-                (self._held_obj_id, held_pid_now, held_count_now
-                 ) = self._select_held_oid_at_grasp(
-                    tracker, T_wb, T_bg, T_bc, detections, depth, K, width)
-                new_phase = "grasping"
-                self._transition_remaining = self.min_transition_frames
-                self._width_history = [float(width)]
-                is_moving = True
-            elif self._transition_remaining == 0 and not is_moving:
-                new_phase = "idle"
-                self._held_obj_id = None
-
-        # Held track may have been pruned since last frame.
-        if (self._held_obj_id is not None
-                and self._held_obj_id not in tracker.state.objects):
-            self._held_obj_id = None
-
-        self._closed_prev = is_closed
-        self._phase_prev = new_phase
-        return {"phase": new_phase,
-                "held_obj_id": self._held_obj_id,
-                "gripper_width_m": width,
-                "is_moving": is_moving,
-                "held_pid": held_pid_now,
-                "held_grasp_count": held_count_now}
-
-    # ---------------------------------------------------------------- #
-    #  Held-object selection at grasp onset
-    # ---------------------------------------------------------------- #
-
-    def _select_held_oid_at_grasp(
-            self,
-            tracker: "InstrumentedTracker",
-            T_wb: np.ndarray,
-            T_bg: Optional[np.ndarray],
-            T_bc: Optional[np.ndarray],
-            detections: Optional[List[Dict[str, Any]]],
-            depth: Optional[np.ndarray],
-            K: Optional[np.ndarray],
-            width: float,
-            ) -> Tuple[Optional[int], Optional[Any], int]:
-        """Delegate to the robot-agnostic GraspOwnerDetector.
-
-        Returns ``(held_oid, held_pid, inside_count)`` to preserve the
-        tuple shape this inferrer was using before the refactor.
-        """
-        if self.detector is None:
-            # No detector configured (legacy ctor path) — fall back.
-            return self._find_nearest_live_track(tracker, T_wb, T_bg), None, 0
-        # Prefer real per-finger joint values; synthesize from width as a
-        # last resort so the detector still gets a usable state.
-        joints = getattr(self, "_joints_now", None)
-        if joints is None and width is not None:
-            joints = {"l_gripper_finger_joint": 0.5 * float(width),
-                      "r_gripper_finger_joint": 0.5 * float(width)}
-        decision = self.detector.select(
-            detections=detections, depth=depth, K=K,
-            T_wb=T_wb, T_bg=T_bg, T_bc=T_bc,
-            joints=joints,
-            tracker_state=InstrumentedTrackerState(tracker),
-        )
-        return decision.held_oid, decision.held_pid, decision.inside_count
-
-    def _find_nearest_live_track(self,
-                                  tracker: "InstrumentedTracker",
-                                  T_wb: np.ndarray,
-                                  T_bg: Optional[np.ndarray],
-                                  ) -> Optional[int]:
-        """Legacy fallback: pick live track whose mu_w is closest to EE."""
-        if T_bg is None:
-            return None
-        ee_world = (T_wb @ T_bg)[:3, 3]
-        best_oid, best_d = None, float("inf")
-        for oid, b in tracker.state.objects.items():
-            xyz_b = np.asarray(b.mu_bo)[:3, 3]
-            xyz_w = (T_wb @ np.append(xyz_b, 1.0))[:3]
-            d = float(np.linalg.norm(xyz_w - ee_world))
-            if d < best_d:
-                best_d, best_oid = d, oid
-        if best_oid is not None and best_d <= self.grasp_radius:
-            return int(best_oid)
-        return None
-
-
-class _RelationPipeline:
-    """Wrapper around the LLM/REST relation backend for the test driver.
-
-    Throttles re-detection via the same trigger logic the production
-    orchestrator uses (extracted to ``pose_update.relation_utils``).
-    Smooths the per-call edge scores via the orchestrator's
-    ``RelationFilter`` (EMA). Exposes the current filtered edges so the
-    driver can expand the held set via
-    ``expand_held_with_relations``.
-
-    The backend is constructed lazily on first ``maybe_update`` call so
-    visualization runs that never enter a triggering frame don't pay
-    the LLM-init cost.
-    """
-
-    def __init__(self, backend: str = "llm",
-                 llm_model: str = "gpt-5.1",
-                 ema_alpha: float = 0.3,
-                 ema_threshold: float = 0.5,
-                 score_threshold: float = 0.5,
-                 trigger_cfg: Optional[RelationTriggerConfig] = None,
-                 cache_dir: Optional[str] = None):
-        self.backend = backend
-        self.llm_model = llm_model
-        self.score_threshold = float(score_threshold)
-        self._cache_dir = cache_dir
-        self._client = None                      # lazily-initialised
-        self._filter = RelationFilter(alpha=ema_alpha,
-                                       threshold=ema_threshold)
-        self._state = RelationTriggerState()
-        self._cfg = trigger_cfg or RelationTriggerConfig()
-        self._edges: List[RelationEdge] = []
-        self._last_call_summary: Dict[str, Any] = {}
-
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        if self.backend == "none":
-            return None
-        try:
-            if self.backend == "llm":
-                from pose_update.relation_client import LLMRelationClient
-                inner = LLMRelationClient(model_name=self.llm_model)
-            elif self.backend == "rest":
-                from pose_update.relation_client import RESTRelationClient
-                inner = RESTRelationClient()
-            else:
-                print(f"[relation] unknown backend {self.backend!r} — disabled")
-                return None
-            # Wrap in disk cache if a cache_dir was configured.
-            if self._cache_dir:
-                from pose_update.relation_client import CachedRelationClient
-                os.makedirs(self._cache_dir, exist_ok=True)
-                inner = CachedRelationClient(inner, cache_dir=self._cache_dir)
-                print(f"[relation] cache dir: {self._cache_dir}")
-            self._client = inner
-        except Exception as e:
-            print(f"[relation] backend init failed ({e}) — disabled")
-            self.backend = "none"
-            return None
-        return self._client
-
-    def maybe_update(self,
-                     frame: int,
-                     rgb: np.ndarray,
-                     detections: List[Dict[str, Any]],
-                     det_to_oid: Dict[int, int],
-                     current_phase: str,
-                     current_oids: Set[int],
-                     held_oid: Optional[int] = None,
-                     live_tracks: Optional[Dict[int, Dict[str, Any]]]
-                                  = None,
-                     ) -> Dict[str, Any]:
-        """Decide whether to re-call the backend; if so, do it; update
-        state. Returns a summary dict (whether fired, n_edges, etc.).
-
-        Pure backend + EMA pipeline. ``held_oid`` / ``live_tracks`` are
-        accepted for caller-API compatibility but no longer consumed.
-        """
-        del held_oid, live_tracks  # geometric fallback removed
-
-        fired = should_recompute_relations(
-            self._state, current_phase, current_oids, frame, self._cfg)
-        if not fired:
-            self._last_call_summary = {
-                "fired": False, "frame": frame,
-                "n_filtered_edges": len(self._edges),
-            }
-            return self._last_call_summary
-
-        client = self._ensure_client()
-        if client is None:
-            # Backend disabled — clear edges via empty raw frame.
-            self._edges = self._filter.update([])
-            self._state.last_relation_frame = frame
-            self._state.last_phase = current_phase
-            self._state.known_oids_before_step = set(current_oids)
-            self._last_call_summary = {
-                "fired": True, "backend": "none",
-                "frame": frame,
-                "n_filtered_edges": len(self._edges),
-            }
-            return self._last_call_summary
-
-        # Build per-oid (bbox, mask) lists from current detections.
-        H, W = rgb.shape[:2]
-        oid_list: List[int] = []
-        bboxes: List[np.ndarray] = []
-        masks: List[Optional[np.ndarray]] = []
-        seen: Set[int] = set()
-        for det_idx, oid in det_to_oid.items():
-            if oid in seen:
-                continue
-            if not (0 <= det_idx < len(detections)):
-                continue
-            det = detections[det_idx]
-            box = det.get("box")
-            if box is None:
-                continue
-            try:
-                x0, y0, x1, y1 = (float(b) for b in box)
-            except (TypeError, ValueError):
-                continue
-            bbox_n = np.array([x0 / W, y0 / H, x1 / W, y1 / H],
-                               dtype=np.float32)
-            mask = det.get("mask")
-            if mask is not None:
-                mask = np.asarray(mask) > 0
-            oid_list.append(int(oid))
-            bboxes.append(bbox_n)
-            masks.append(mask)
-            seen.add(int(oid))
-
-        if len(oid_list) < 2:
-            # Backend needs ≥2 oids; let the EMA decay this frame.
-            self._edges = self._filter.update([])
-            self._state.last_relation_frame = frame
-            self._state.last_phase = current_phase
-            self._state.known_oids_before_step = set(current_oids)
-            self._last_call_summary = {
-                "fired": True, "n_oids": len(oid_list),
-                "n_filtered_edges": len(self._edges),
-                "frame": frame, "skipped": "too_few_oids_for_llm",
-            }
-            return self._last_call_summary
-
-        rgb_pil = (rgb if isinstance(rgb, Image.Image)
-                   else Image.fromarray(np.asarray(rgb, dtype=np.uint8)))
-        usable_masks = masks if all(m is not None for m in masks) else None
-        # Stash the frame index for the cache wrapper (no-op if the
-        # client is not wrapped). Cleared after the call to avoid
-        # leaking context between frames.
-        from pose_update.relation_client import set_relation_context
-        try:
-            set_relation_context(frame)
-            p_parent = client.detect(rgb_pil, np.stack(bboxes, axis=0),
-                                      masks=usable_masks)
-        except Exception as e:
-            print(f"[relation] detect() raised: {e}")
-            p_parent = None
-        finally:
-            set_relation_context(None)
-
-        if p_parent is None:
-            self._edges = self._filter.update([])
-            self._state.last_relation_frame = frame
-            self._state.last_phase = current_phase
-            self._state.known_oids_before_step = set(current_oids)
-            self._last_call_summary = {
-                "fired": True, "frame": frame,
-                "n_filtered_edges": len(self._edges),
-                "skipped": "detect_returned_none",
-            }
-            return self._last_call_summary
-
-        n = len(oid_list)
-        raw: List[RelationEdge] = []
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                s = float(p_parent[i, j])
-                if s < self.score_threshold:
-                    continue
-                # LLM convention: "i is parent of j" = "j rests on i".
-                # `expand_held_with_relations` convention: parent =
-                # supported, child = supporter. So we map LLM-i
-                # (the supporter) to expand-child, and LLM-j (the
-                # supported) to expand-parent. Without this swap, the
-                # held-set expansion walks edges in the wrong direction
-                # and never propagates the held seed to its riders.
-                raw.append(RelationEdge(parent=oid_list[j],
-                                         child=oid_list[i],
-                                         relation_type="on", score=s))
-
-        self._edges = self._filter.update(raw)
-        self._state.last_relation_frame = frame
-        self._state.last_phase = current_phase
-        self._state.known_oids_before_step = set(current_oids)
-        self._last_call_summary = {
-            "fired": True, "frame": frame,
-            "backend": self.backend,
-            "n_oids": n,
-            "n_raw_edges": len(raw),
-            "n_filtered_edges": len(self._edges),
-            "edges": [(e.parent, e.child, e.relation_type, e.score)
-                      for e in self._edges],
-        }
-        return self._last_call_summary
+    def __init__(self, *args, **kwargs):
+        # GraspOwnerDetector is the only kwarg the driver passes that
+        # isn't part of GripperPhaseTracker's defaults; pass through
+        # everything else by name.
+        self._inner = _GripperPhaseTracker(*args, **kwargs)
+        # Legacy attribute name used elsewhere in the driver.
+        self._joints_now = None
 
     @property
-    def edges(self) -> List[RelationEdge]:
-        return list(self._edges)
+    def _held_obj_id(self):
+        return self._inner.held_obj_id
 
-    def remap_after_merges(self,
-                            merges: List[Dict[str, Any]]) -> None:
-        """Rewrite EMA keys + filtered edges so dropped oids are
-        replaced by their keep counterparts. Without this, after a
-        self-merge the relation graph keeps referencing the dropped
-        oid, ``expand_held_with_relations`` fails to find any
-        ``child=keep_oid`` edge, and the held set collapses to just
-        the seed on the next frame.
-        """
-        if not merges:
-            return
-        drop_to_keep: Dict[int, int] = {}
-        for m in merges:
-            keep = m.get("keep_oid")
-            drop = m.get("drop_oid")
-            if keep is None or drop is None:
-                continue
-            try:
-                drop_to_keep[int(drop)] = int(keep)
-            except (TypeError, ValueError):
-                continue
-        if not drop_to_keep:
-            return
+    def apply_merges(self, merges):
+        self._inner.apply_merges(merges)
 
-        def _resolve(o: int) -> int:
-            seen: Set[int] = set()
-            while o in drop_to_keep and o not in seen:
-                seen.add(o)
-                o = drop_to_keep[o]
-            return o
+    def step(self, width, tracker, T_wb, T_bg, **kwargs):
+        # Adapt the InstrumentedTracker → TrackerState protocol expected
+        # by the production phase tracker.
+        from pose_update.grasp_owner_detector import InstrumentedTrackerState
+        ts = InstrumentedTrackerState(tracker)
+        live_oids = set(int(o) for o in tracker.object_labels.keys())
+        return self._inner.step(
+            width=width, tracker_state=ts,
+            T_wb=T_wb, T_bg=T_bg,
+            live_oids=live_oids,
+            **kwargs)
 
-        # Rewrite EMA keys (collapse self-loops, dedup with max).
-        new_ema: Dict[tuple, float] = {}
-        for (p, c, t), val in self._filter._ema.items():
-            try:
-                p2, c2 = _resolve(int(p)), _resolve(int(c))
-            except (TypeError, ValueError):
-                continue
-            if p2 == c2:
-                continue
-            key = (p2, c2, t)
-            new_ema[key] = max(val, new_ema.get(key, 0.0))
-        self._filter._ema = new_ema
 
-        # Rewrite the currently-emitted edges (consumed by next
-        # frame's expansion).
-        new_edges: List[RelationEdge] = []
-        seen_keys: Set[tuple] = set()
-        for e in self._edges:
-            try:
-                p2, c2 = _resolve(int(e.parent)), _resolve(int(e.child))
-            except (TypeError, ValueError):
-                continue
-            if p2 == c2:
-                continue
-            key = (p2, c2, e.relation_type)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            new_edges.append(RelationEdge(
-                parent=p2, child=c2,
-                relation_type=e.relation_type,
-                score=e.score))
-        self._edges = new_edges
+from pose_update.relation_orchestrator import RelationOrchestrator as _RelationPipeline  # noqa: E402,F401
 
 
 def _load_detection_json(path: str) -> List[Dict[str, Any]]:
@@ -1033,67 +549,33 @@ class InstrumentedTracker:
 
     def _candidate_near_live_track(self, det: Dict[str, Any]
                                     ) -> Optional[Dict[str, Any]]:
-        """If `det`'s world-frame centroid is within the proximity gate
-        of a same-label live track, return a dict describing the
-        offending pair (``{nearest_oid, dist_m, gate_m, anchor}``);
-        else return ``None``.
+        """Thin wrapper around :func:`pose_update.birth_gating.is_near_live_track`.
 
-        The dict shape lets the caller emit detailed reject records
-        (which oid, how close, by what gate). Anchor is ``"mu_w"`` for
-        non-held tracks and ``"mu_w"`` or ``"T_we"`` for the held one.
-
-        For the currently held oid (if any), the comparison uses the
-        proprio-derived ``T_we`` (gripper position in world) in
-        addition to the EKF mean ``mu_w``; the wider
-        ``cfg.held_birth_radius_m`` radius applies.
+        See that function for behaviour. This method simply provides
+        the tracker context (T_wb, T_bc, held oid, T_we, cfg) so the
+        production helper can be called.
         """
-        default_gate = float(getattr(self.cfg, "birth_min_dist_m", 0.0))
-        held_gate = float(getattr(self.cfg, "held_birth_radius_m",
-                                    default_gate))
-        if (default_gate <= 0.0 and held_gate <= 0.0) or not self.object_labels:
-            return None
-        c_cam = det.get("_centroid_cam")
-        if c_cam is None:
-            return None
+        from pose_update.birth_gating import (
+            BirthGateConfig, is_near_live_track,
+        )
         T_wb = getattr(self.state, "T_wb", None)
         T_bc = getattr(self.state, "T_bc", None)
-        if T_wb is None or T_bc is None:
-            return None
-        c_h = np.array([float(c_cam[0]), float(c_cam[1]),
-                         float(c_cam[2]), 1.0], dtype=np.float64)
-        c_world = (T_wb @ T_bc @ c_h)[:3]
-        cand_label = det.get("label")
-        held_oid = self._held_oid_now
-        T_we = self._held_T_we_now
-        for oid, lbl in self.object_labels.items():
-            if cand_label is not None and lbl != cand_label:
-                continue
-            pe = self.state.collapsed_object_base(oid)
-            if pe is None:
-                continue
-            mu_b = np.asarray(pe.T, dtype=np.float64)[:3, 3]
-            mu_w = (T_wb @ np.append(mu_b, 1.0))[:3]
-            if oid == held_oid:
-                if held_gate <= 0.0:
-                    continue
-                d_mu = float(np.linalg.norm(c_world - mu_w))
-                if d_mu <= held_gate:
-                    return {"nearest_oid": int(oid), "dist_m": d_mu,
-                             "gate_m": held_gate, "anchor": "mu_w"}
-                if T_we is not None:
-                    we_t = T_we[:3, 3]
-                    d_we = float(np.linalg.norm(c_world - we_t))
-                    if d_we <= held_gate:
-                        return {"nearest_oid": int(oid), "dist_m": d_we,
-                                 "gate_m": held_gate, "anchor": "T_we"}
-            else:
-                if default_gate <= 0.0:
-                    continue
-                d_mu = float(np.linalg.norm(c_world - mu_w))
-                if d_mu <= default_gate:
-                    return {"nearest_oid": int(oid), "dist_m": d_mu,
-                             "gate_m": default_gate, "anchor": "mu_w"}
-        return None
+        cfg = BirthGateConfig(
+            birth_min_dist_m=float(
+                getattr(self.cfg, "birth_min_dist_m", 0.05)),
+            held_birth_radius_m=float(
+                getattr(self.cfg, "held_birth_radius_m",
+                         getattr(self.cfg, "birth_min_dist_m", 0.05))),
+        )
+        return is_near_live_track(
+            det,
+            tracker=self,
+            T_wb=T_wb,
+            T_bc=T_bc,
+            held_oid_now=self._held_oid_now,
+            held_T_we_now=self._held_T_we_now,
+            cfg=cfg,
+        )
 
     def _compute_visibility(self,
                             depth: np.ndarray,
@@ -1326,14 +808,13 @@ class InstrumentedTracker:
         # produce as the gripper passes overhead. Held-track motion
         # is owned by the rigid-attach predict, not Kalman gain
         # magnitude, so a looser R doesn't slow them down.
-        _R_CENT_CAM = np.diag([(0.02) ** 2] * 3)
         _ROT_PAD = np.eye(3, dtype=np.float64) * 1e6
         def _centroid_innov(oid: int,
                               T_co: np.ndarray,
                               R_icp: np.ndarray):
             centroid_cam = np.asarray(T_co, dtype=np.float64)[:3, 3]
             stats3 = self.state.centroid_innovation_stats(
-                oid, centroid_cam, R_cam=_R_CENT_CAM)
+                oid, centroid_cam, R_cam=_R_CENT_CAM_3D)
             if stats3 is None:
                 return None
             nu3, S3, d2_3, logL3 = stats3
@@ -1637,10 +1118,8 @@ class InstrumentedTracker:
                 # `lift_measurement_base` (which Ad-couples the huge
                 # R_rot into the translation block).
                 centroid_cam = det["_centroid_cam"]
-                # 2 cm centroid std (matched to _R_CENT_CAM).
-                R_cam_3D = np.diag([(0.02) ** 2] * 3)
                 stats3 = self.state.innovation_stats_centroid_3d(
-                    oid, centroid_cam, R_cam=R_cam_3D)
+                    oid, centroid_cam, R_cam=_R_CENT_CAM_3D)
                 if stats3 is None:
                     continue
                 nu3, S3, d2_t, log_lik = stats3
@@ -1714,7 +1193,7 @@ class InstrumentedTracker:
                     oid=oid,
                     centroid_cam=det["_centroid_cam"],
                     # 2 cm std (matched to assoc R_cam).
-                    R_cam=np.diag([(0.02) ** 2] * 3),
+                    R_cam=_R_CENT_CAM_3D,
                     huber_w=w, P_max=self.cfg.P_max,
                 )
             else:
