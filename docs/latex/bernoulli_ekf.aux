@@ -2,115 +2,17 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
-\@writefile{toc}{\contentsline {section}{\numberline {1}Problem formulation}{1}{section.1}\protected@file@percent }
-\newlabel{sec:problem}{{1}{1}{Problem formulation}{section.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Setting, frames, and per-object state}{1}{subsection.1.1}\protected@file@percent }
-\newlabel{subsec:setting}{{1.1}{1}{Setting, frames, and per-object state}{subsection.1.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Per-object state.}{1}{section*.1}\protected@file@percent }
-\newlabel{eq:obj_state}{{1}{1}{Per-object state}{equation.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Why base frame.}{2}{section*.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Per-frame measurements}{2}{subsection.1.2}\protected@file@percent }
-\newlabel{eq:meas_raw}{{2}{2}{Per-frame measurements}{equation.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}The mask-to-pose bottleneck}{2}{subsection.1.3}\protected@file@percent }
-\newlabel{subsec:bottleneck}{{1.3}{2}{The mask-to-pose bottleneck}{subsection.1.3}{}}
-\newlabel{eq:pipeline}{{3}{2}{The mask-to-pose bottleneck}{equation.3}{}}
-\newlabel{eq:meas_compose}{{4}{2}{The mask-to-pose bottleneck}{equation.4}{}}
-\citation{Williams2015}
-\citation{GarciaFernandez2018}
-\citation{MurrayLiSastry1994}
-\citation{MurrayLiSastry1994}
-\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}Estimation target and pathologies}{3}{subsection.1.4}\protected@file@percent }
-\newlabel{eq:target}{{5}{3}{Estimation target and pathologies}{equation.5}{}}
-\newlabel{p:miss}{{{{(i)}}}{3}{Estimation target and pathologies}{Item.4}{}}
-\newlabel{p:clutter}{{{{(ii)}}}{3}{Estimation target and pathologies}{Item.5}{}}
-\newlabel{p:assoc}{{{{(iii)}}}{3}{Estimation target and pathologies}{Item.6}{}}
-\newlabel{p:mismatch}{{{{(iv)}}}{3}{Estimation target and pathologies}{Item.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {2}$\mathrm  {SE}(3)$ preliminaries}{3}{section.2}\protected@file@percent }
-\newlabel{sec:se3}{{2}{3}{$\SE $ preliminaries}{section.2}{}}
-\newlabel{eq:expmap}{{6}{3}{$\SE $ preliminaries}{equation.6}{}}
-\newlabel{eq:logmap}{{7}{3}{$\SE $ preliminaries}{equation.7}{}}
-\newlabel{eq:gauss_se3}{{8}{4}{$\SE $ preliminaries}{equation.8}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {3}Extended Kalman filter on $\mathrm  {SE}(3)$ (single target)}{4}{section.3}\protected@file@percent }
-\newlabel{sec:ekf}{{3}{4}{Extended Kalman filter on $\SE $ (single target)}{section.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Glossary of variables (this section).}{4}{section*.4}\protected@file@percent }
-\newlabel{eq:proc}{{9}{5}{Process and measurement models}{equation.9}{}}
-\newlabel{eq:control}{{10}{5}{Process and measurement models}{equation.10}{}}
-\citation{MurrayLiSastry1994}
-\@writefile{toc}{\contentsline {paragraph}{Justification of the two regimes.}{6}{section*.6}\protected@file@percent }
-\newlabel{eq:meas}{{11}{6}{Justification of the two regimes}{equation.11}{}}
-\@writefile{toc}{\contentsline {paragraph}{Predict.}{6}{section*.7}\protected@file@percent }
-\newlabel{eq:phi}{{12}{6}{Predict}{equation.12}{}}
-\newlabel{eq:ekf_T_pred}{{13}{6}{Predict}{equation.13}{}}
-\newlabel{eq:ekf_P_pred}{{14}{6}{Predict}{equation.14}{}}
-\@writefile{toc}{\contentsline {paragraph}{Update.}{6}{section*.8}\protected@file@percent }
-\newlabel{eq:ekf_innov}{{15}{6}{Update}{equation.15}{}}
-\citation{Williams2015}
-\newlabel{eq:ekf_T_upd}{{16}{7}{Update}{equation.16}{}}
-\newlabel{eq:ekf_P_upd}{{17}{7}{Update}{equation.17}{}}
-\@writefile{toc}{\contentsline {paragraph}{Innovation likelihood and Mahalanobis statistic.}{7}{section*.9}\protected@file@percent }
-\newlabel{eq:ekf_lik}{{18}{7}{Innovation likelihood and Mahalanobis statistic}{equation.18}{}}
-\newlabel{eq:mahal}{{19}{7}{Innovation likelihood and Mahalanobis statistic}{equation.19}{}}
-\@writefile{toc}{\contentsline {paragraph}{Robust update.}{7}{section*.10}\protected@file@percent }
-\newlabel{eq:huber}{{20}{7}{Robust update}{equation.20}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {4}Per-object Bernoulli state}{7}{section.4}\protected@file@percent }
-\newlabel{sec:bern}{{4}{7}{Per-object Bernoulli state}{section.4}{}}
-\newlabel{eq:bern_density}{{21}{7}{Per-object Bernoulli state}{equation.21}{}}
-\citation{GarciaFernandez2018}
-\@writefile{toc}{\contentsline {paragraph}{Multi-Bernoulli approximation.}{8}{section*.11}\protected@file@percent }
-\newlabel{eq:pose_rfs_union}{{22}{8}{Multi-Bernoulli approximation}{equation.22}{}}
-\newlabel{eq:mb_factorisation}{{23}{8}{Multi-Bernoulli approximation}{equation.23}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Bernoulli prediction}{8}{section.5}\protected@file@percent }
-\newlabel{sec:bern-pred}{{5}{8}{Bernoulli prediction}{section.5}{}}
-\newlabel{eq:bern_pred_r}{{24}{8}{Bernoulli prediction}{equation.24}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Data association}{8}{section.6}\protected@file@percent }
-\newlabel{sec:data-assoc}{{6}{8}{Data association}{section.6}{}}
-\newlabel{eq:innov_pair}{{25}{8}{Data association}{equation.25}{}}
-\newlabel{eq:cost}{{26}{9}{Data association}{equation.26}{}}
-\newlabel{eq:hung}{{27}{9}{Data association}{equation.27}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Bernoulli measurement update}{9}{section.7}\protected@file@percent }
-\newlabel{sec:update}{{7}{9}{Bernoulli measurement update}{section.7}{}}
-\@writefile{toc}{\contentsline {paragraph}{Track $i$ associated with $z_{k,l}$ ($\pi ^{\!*}(i)=l$).}{9}{section*.12}\protected@file@percent }
-\newlabel{eq:r_assoc_deriv}{{28}{9}{Track $i$ associated with $z_{k,l}$ ($\pi ^{\!*}(i)=l$)}{equation.28}{}}
-\newlabel{eq:r_assoc}{{29}{9}{Track $i$ associated with $z_{k,l}$ ($\pi ^{\!*}(i)=l$)}{equation.29}{}}
-\citation{GarciaFernandez2018}
-\citation{BarShalom2011}
-\@writefile{toc}{\contentsline {paragraph}{Track $i$ unassigned ($\pi ^{\!*}(i)=0$).}{10}{section*.13}\protected@file@percent }
-\newlabel{eq:r_miss}{{30}{10}{Track $i$ unassigned ($\pi ^{\!*}(i)=0$)}{equation.30}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Birth: unmatched measurements}{10}{section.8}\protected@file@percent }
-\newlabel{sec:birth}{{8}{10}{Birth: unmatched measurements}{section.8}{}}
-\newlabel{eq:birth_r}{{31}{10}{Birth: unmatched measurements}{equation.31}{}}
-\newlabel{eq:birth_state}{{32}{10}{Birth: unmatched measurements}{equation.32}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {9}Visibility predicate $p_v$}{11}{section.9}\protected@file@percent }
-\newlabel{sec:vis}{{9}{11}{Visibility predicate $p_v$}{section.9}{}}
-\newlabel{eq:rho}{{34}{11}{Visibility predicate $p_v$}{equation.34}{}}
-\newlabel{eq:pv}{{35}{11}{Visibility predicate $p_v$}{equation.35}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {10}Pruning and output}{11}{section.10}\protected@file@percent }
-\newlabel{sec:emit}{{10}{11}{Pruning and output}{section.10}{}}
-\newlabel{eq:emit_base}{{36}{11}{Pruning and output}{equation.36}{}}
-\@writefile{toc}{\contentsline {paragraph}{World-frame composition (the only place $\Sigma _{wb,k}$ enters).}{11}{section*.14}\protected@file@percent }
-\newlabel{eq:wo_mean}{{37}{11}{World-frame composition (the only place $\Sigma _{wb,k}$ enters)}{equation.37}{}}
-\newlabel{eq:wo_cov}{{38}{11}{World-frame composition (the only place $\Sigma _{wb,k}$ enters)}{equation.38}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {11}Per-track observation chain (canonical world-frame state)}{12}{section.11}\protected@file@percent }
-\newlabel{sec:chain}{{11}{12}{Per-track observation chain (canonical world-frame state)}{section.11}{}}
-\@writefile{toc}{\contentsline {paragraph}{Chain definition.}{12}{section*.15}\protected@file@percent }
-\newlabel{eq:chain}{{39}{12}{Chain definition}{equation.39}{}}
-\@writefile{toc}{\contentsline {paragraph}{Update rules.}{12}{section*.16}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Post-hoc world-frame composition.}{12}{section*.17}\protected@file@percent }
-\newlabel{eq:chain_smooth}{{40}{12}{Post-hoc world-frame composition}{equation.40}{}}
-\newlabel{eq:chain_lift_T}{{41}{13}{Post-hoc world-frame composition}{equation.41}{}}
-\newlabel{eq:chain_lift_R}{{42}{13}{Post-hoc world-frame composition}{equation.42}{}}
-\@writefile{toc}{\contentsline {paragraph}{What this buys.}{13}{section*.18}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Relation to the Bernoulli-EKF.}{13}{section*.19}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {12}Frame-by-frame algorithm}{13}{section.12}\protected@file@percent }
-\citation{GarciaFernandez2018}
-\@writefile{toc}{\contentsline {section}{\numberline {13}Reduction to existing code}{14}{section.13}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Calibrated parameters.}{14}{section*.20}\protected@file@percent }
-\citation{GarciaFernandez2018}
-\@writefile{toc}{\contentsline {section}{\numberline {14}Approximations relative to PMBM}{15}{section.14}\protected@file@percent }
-\newlabel{sec:approx}{{14}{15}{Approximations relative to PMBM}{section.14}{}}
-\bibcite{Williams2015}{1}
-\bibcite{GarciaFernandez2018}{2}
-\bibcite{BarShalom2011}{3}
-\bibcite{MurrayLiSastry1994}{4}
-\@writefile{toc}{\contentsline {paragraph}{What this buys, what this costs.}{16}{section*.21}\protected@file@percent }
-\gdef \@abspage@last{16}
+\newlabel{sec:overview}{{}{1}{Part I — Algorithmic Overview}{section*.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{1. State.}{1}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{2. Predict.}{1}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{3. Detection conditioning.}{1}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{4. Association.}{1}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{5. Update.}{1}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{6. Birth and prune.}{1}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{7. Self-merge.}{1}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{8. Relations.}{2}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{9. Held-set expansion.}{2}{section*.10}\protected@file@percent }
+\newlabel{sec:detail}{{}{2}{Part II — Detailed Elaboration}{section*.11}{}}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Self-merge pass.}}{4}{algorithm.1}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {2}{\ignorespaces One frame of the Bernoulli-EKF tracker (driver loop).}}{6}{algorithm.2}\protected@file@percent }
+\gdef \@abspage@last{7}
