@@ -85,3 +85,87 @@ def test_held_cleared_when_track_pruned(fsm):
                     T_wb=np.eye(4), T_bg=np.eye(4),
                     live_oids={1, 2, 3})  # 99 not present
     assert fsm.held_obj_id is None
+
+
+# ─── Fix 0: open-baseline closing detection ────────────────────────
+
+def test_thick_object_grasp_recognised():
+    """Project assumption: gripper open by default; ANY closing →
+    grasp. A grip on a 6.7 cm object (width 0.067 m, well above the
+    legacy closed_width=0.025 absolute threshold) MUST trigger
+    `grasping`. This is the regression that caused apple_to_cabinate
+    to lose tracks during carry.
+    """
+    fsm = GripperPhaseTracker(
+        closed_width_m=0.025, open_width_m=0.040,
+        close_delta_m=0.005, history_size=5,
+        motion_threshold_m=0.005, min_transition_frames=2,
+        detector=None,
+    )
+    # Seed open at 0.10 m.
+    out = fsm.step(width=0.1004, tracker_state=_FakeTrackerState(),
+                    T_wb=np.eye(4), T_bg=np.eye(4))
+    assert out["phase"] == "idle"
+    out = fsm.step(width=0.1004, tracker_state=_FakeTrackerState(),
+                    T_wb=np.eye(4), T_bg=np.eye(4))
+    assert out["phase"] == "idle"
+    # Width drops onto a thick object: 0.0989 → 0.0803 → 0.0667.
+    out = fsm.step(width=0.0989, tracker_state=_FakeTrackerState(),
+                    T_wb=np.eye(4), T_bg=np.eye(4))
+    out = fsm.step(width=0.0803, tracker_state=_FakeTrackerState(),
+                    T_wb=np.eye(4), T_bg=np.eye(4))
+    assert out["phase"] == "grasping"
+
+
+def test_open_baseline_resets_on_release():
+    """After a full grasp/release cycle, open_baseline_m resets so
+    the next cycle re-anchors against a fresh open width."""
+    fsm = GripperPhaseTracker(
+        closed_width_m=0.025, open_width_m=0.040,
+        close_delta_m=0.005, history_size=3,
+        motion_threshold_m=0.005, min_transition_frames=1,
+        detector=None,
+    )
+    # Seed open.
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    # Close.
+    fsm.step(width=0.07, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.07, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.07, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    assert fsm._open_baseline_m == pytest.approx(0.10)
+    # Release.
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    # After idle reached, open_baseline should re-anchor.
+    assert fsm._phase_prev == "idle"
+
+
+def test_width_jitter_stays_open():
+    """A small jitter (0.0995 instead of 0.1000) within
+    close_delta_m should NOT trigger grasping — that would be
+    spurious."""
+    fsm = GripperPhaseTracker(
+        closed_width_m=0.025, open_width_m=0.040,
+        close_delta_m=0.005, history_size=3,
+        motion_threshold_m=0.005, min_transition_frames=1,
+        detector=None,
+    )
+    fsm.step(width=0.10, tracker_state=_FakeTrackerState(),
+              T_wb=np.eye(4), T_bg=np.eye(4))
+    out = fsm.step(width=0.0995, tracker_state=_FakeTrackerState(),
+                    T_wb=np.eye(4), T_bg=np.eye(4))
+    assert out["phase"] == "idle"

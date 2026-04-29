@@ -61,6 +61,7 @@ class GripperPhaseTracker:
         self,
         closed_width_m: float = 0.025,
         open_width_m: float = 0.040,
+        close_delta_m: float = 0.005,
         grasp_radius_m: float = 0.30,
         history_size: int = 5,
         motion_threshold_m: float = 0.01,
@@ -70,6 +71,12 @@ class GripperPhaseTracker:
     ):
         self.closed_width = float(closed_width_m)
         self.open_width = float(open_width_m)
+        # Project assumption: gripper is fully open by default; ANY
+        # closing of the fingers must register as a grasp action.
+        # `close_delta_m` is the minimum drop below the rolling open
+        # baseline that counts as "closed". 5 mm captures any non-
+        # trivial finger motion while ignoring proprioception jitter.
+        self.close_delta_m = float(close_delta_m)
         self.grasp_radius = float(grasp_radius_m)
         self.history_size = int(history_size)
         self.motion_threshold = float(motion_threshold_m)
@@ -83,6 +90,9 @@ class GripperPhaseTracker:
         self._transition_remaining: int = 0
         self._width_history: List[float] = []
         self._joints_now: Optional[Dict[str, Any]] = None
+        # Rolling max width during `idle` phase. Reset on
+        # `releasing → idle` so each grasp cycle re-anchors.
+        self._open_baseline_m: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -145,16 +155,41 @@ class GripperPhaseTracker:
         if self._closed_prev is None:
             self._closed_prev = width < self.closed_width
             self._phase_prev = "holding" if self._closed_prev else "idle"
+            # Seed open-baseline when starting open.
+            if not self._closed_prev:
+                self._open_baseline_m = float(width)
             return {"phase": self._phase_prev,
                     "held_obj_id": None,
                     "gripper_width_m": width,
                     "is_moving": False}
 
-        # Hysteresis on closed/open.
-        if self._closed_prev:
-            is_closed = width < self.open_width
+        # Update the open-baseline whenever the gripper is unambiguously
+        # open (idle phase). We anchor on the previous phase so the
+        # baseline doesn't drift during a held grasp where width is
+        # already below the baseline.
+        if self._phase_prev == "idle":
+            if (self._open_baseline_m is None
+                    or width > self._open_baseline_m):
+                self._open_baseline_m = float(width)
+
+        # Closing detection: any drop ≥ close_delta_m below the open
+        # baseline counts as closed. Project assumption: gripper is
+        # open by default; any closing → grasp. Falls back to the
+        # legacy absolute threshold when no baseline is available
+        # (very-first frame edge case).
+        if self._open_baseline_m is None:
+            abs_close = width < self.closed_width
         else:
-            is_closed = width < self.closed_width
+            abs_close = width < (self._open_baseline_m - self.close_delta_m)
+
+        # Use the same closing criterion in both directions: the
+        # FSM stays "closed" until width returns to within
+        # `close_delta_m` of the open baseline. This is the right
+        # semantic for "gripper open by default; any closing =
+        # grasp" — without this, a held grip at 6.7 cm would be
+        # spuriously reported "open" against the legacy 4 cm
+        # threshold and the FSM would oscillate.
+        is_closed = abs_close
 
         if len(self._width_history) >= 2:
             spread = max(self._width_history) - min(self._width_history)
@@ -212,6 +247,8 @@ class GripperPhaseTracker:
             elif self._transition_remaining == 0 and not is_moving:
                 new_phase = "idle"
                 self._held_obj_id = None
+                # Reset open-baseline so the next grasp cycle re-anchors.
+                self._open_baseline_m = None
 
         # Drop stale held identity when the track was pruned.
         if (self._held_obj_id is not None

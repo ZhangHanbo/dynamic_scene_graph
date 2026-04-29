@@ -77,11 +77,17 @@ class GraspOwnerDetector:
     def __init__(self,
                  gripper: GripperGeometry,
                  min_inside_count: int = 20,
-                 fallback_radius_m: float = 0.30,
+                 fallback_radius_m: float = 0.05,
                  perception_keys: Tuple[str, ...] =
                      ("grasp_owner_pid", "is_grasped")):
         self.gripper = gripper
         self.min_inside_count = int(min_inside_count)
+        # Tier-3 (legacy nearest-track) radius. Tightened to 5 cm to
+        # match "object at the finger surface" — anything farther is
+        # not the grasped object. Distance measured to the nearest
+        # point of the per-track surface cloud (NOT the centroid),
+        # so large objects (trays) are matched by their rim, not
+        # their geometric center.
         self.fallback_radius_m = float(fallback_radius_m)
         self.perception_keys = tuple(perception_keys)
 
@@ -116,7 +122,7 @@ class GraspOwnerDetector:
             state = self.gripper.state_from_joints(joints)
             if state is not None:
                 chosen, count = self._geometric_pick(
-                    detections, depth, K, T_wb, T_bg, T_bc, state)
+                    detections, depth, K, T_bg, T_bc, state)
                 if chosen is not None:
                     pid = chosen.get("id")
                     oid = self._map_pid_to_track(
@@ -131,7 +137,7 @@ class GraspOwnerDetector:
         return HeldDecision(
             held_oid=oid, held_pid=None,
             inside_count=0, source="fallback",
-            note=f"nearest-track-to-EE within {self.fallback_radius_m:.2f} m")
+            note=f"nearest-point within {self.fallback_radius_m:.2f} m of EE")
 
     # ────────── helpers ──────────
 
@@ -151,15 +157,19 @@ class GraspOwnerDetector:
                          detections: List[Dict[str, Any]],
                          depth: np.ndarray,
                          K: np.ndarray,
-                         T_wb: np.ndarray,
                          T_bg: np.ndarray,
                          T_bc: np.ndarray,
                          state: Dict[str, Any],
                          ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Score every detection on inside-gripper-count and pick the winner."""
+        """Score every detection on inside-gripper-count and pick the winner.
+
+        Camera→gripper transform is built directly from the kinematic
+        chain ``T_gc = inv(T_bg) · T_bc``. This avoids routing through
+        world (T_wb), which would inject SLAM noise into a purely
+        proprio-kinematic relation.
+        """
         box = self.gripper.inside_volume_g(state)
-        T_wg = T_wb @ T_bg
-        T_gw = np.linalg.inv(T_wg)
+        T_gc = np.linalg.inv(T_bg) @ T_bc
         # Each entry: (inside_count, inside_frac, mask_area, det)
         scored: List[Tuple[int, float, int, Dict[str, Any]]] = []
         for d in detections:
@@ -171,10 +181,8 @@ class GraspOwnerDetector:
             if pts_cam is None or len(pts_cam) == 0:
                 continue
             N = len(pts_cam)
-            homog = np.hstack([pts_cam, np.ones((N, 1))])
-            pts_w = (T_wb @ T_bc @ homog.T).T[:, :3]
-            homog_w = np.hstack([pts_w, np.ones((N, 1))])
-            pts_g = (T_gw @ homog_w.T).T[:, :3]
+            homog_cam = np.hstack([pts_cam, np.ones((N, 1))])
+            pts_g = (T_gc @ homog_cam.T).T[:, :3]
             count = box.count_inside(pts_g)
             if count >= self.min_inside_count:
                 inside_frac = float(count) / float(max(1, N))
@@ -224,14 +232,42 @@ class GraspOwnerDetector:
                              T_wb: np.ndarray,
                              T_bg: Optional[np.ndarray],
                              ) -> Optional[int]:
+        """Pick the live track whose nearest surface point is closest
+        to the EE position in world frame, within
+        ``fallback_radius_m``. Falls back to centroid distance for
+        tracks that haven't accumulated an ICP reference cloud yet
+        (fresh births before their first ICP run).
+        """
         if T_bg is None:
             return None
         ee_world = (T_wb @ T_bg)[:3, 3]
         best_oid, best_d = None, float("inf")
+
+        # Prefer the per-track surface cloud when available — this
+        # captures large-extent objects (tray rim) correctly.
+        seen_with_cloud: set = set()
+        iter_pc = getattr(tracker_state, "iter_world_pointclouds", None)
+        if iter_pc is not None:
+            try:
+                for oid, pts_w in iter_pc():
+                    if pts_w is None or len(pts_w) == 0:
+                        continue
+                    d_min = float(np.linalg.norm(
+                        np.asarray(pts_w) - ee_world, axis=1).min())
+                    if d_min < best_d:
+                        best_d, best_oid = d_min, oid
+                    seen_with_cloud.add(int(oid))
+            except NotImplementedError:
+                pass
+
+        # Centroid fallback for tracks without a stored cloud.
         for oid, mu_w in tracker_state.iter_world_centroids():
+            if int(oid) in seen_with_cloud:
+                continue
             d = float(np.linalg.norm(np.asarray(mu_w) - ee_world))
             if d < best_d:
                 best_d, best_oid = d, oid
+
         if best_oid is not None and best_d <= self.fallback_radius_m:
             return int(best_oid)
         return None
@@ -261,6 +297,18 @@ class TrackerState:
         Return the new oid (or None on failure)."""
         raise NotImplementedError
 
+    def iter_world_pointclouds(self):
+        """Yield ``(oid, points_w)`` for every live track that has a
+        stored ICP reference cloud, transformed to world frame.
+        ``points_w`` is an ``(N, 3)`` numpy array.
+
+        Optional — the default implementation raises
+        :class:`NotImplementedError`; the grasp-owner detector's
+        nearest-point fallback gracefully falls through to centroid
+        distance for adapters that don't implement it.
+        """
+        raise NotImplementedError
+
 
 class InstrumentedTrackerState(TrackerState):
     """Adapter for the ``InstrumentedTracker`` in
@@ -278,6 +326,31 @@ class InstrumentedTrackerState(TrackerState):
             mu_b = np.asarray(b.mu_bo)[:3, 3]
             mu_w = (T_wb @ np.append(mu_b, 1.0))[:3]
             yield int(oid), mu_w
+
+    def iter_world_pointclouds(self):
+        """Per-track ICP reference clouds transformed to world frame.
+
+        Skips tracks without a stored ref cloud (fresh births before
+        their first ICP run); the caller falls back to centroid for
+        those.
+        """
+        pose_est = getattr(self._t, "pose_est", None)
+        if pose_est is None:
+            return
+        T_wb = self._t.state.T_wb
+        objects = self._t.state.objects
+        for oid, ref in pose_est._refs.items():
+            pts_obj = getattr(ref, "ref_points", None)
+            if pts_obj is None or len(pts_obj) == 0:
+                continue
+            b = objects.get(int(oid))
+            if b is None:
+                continue
+            T_wo = T_wb @ np.asarray(b.mu_bo)
+            R_wo = T_wo[:3, :3]
+            t_wo = T_wo[:3, 3]
+            pts_w = np.asarray(pts_obj) @ R_wo.T + t_wo
+            yield int(oid), pts_w
 
     def force_admit(self, det, depth):
         if self._t.pose_est is None:
