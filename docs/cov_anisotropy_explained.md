@@ -1,5 +1,30 @@
 # Why the rendered uncertainty ellipse stretches along one axis and rotates as the robot moves
 
+> **STATUS (2026-05-02): RESOLVED for static-unobserved and released
+> tracks.** The original ~17 cm ellipse on static unobserved tracks
+> and the ~1.2 m released-bottle artifact were caused by the
+> Ad-conjugate cross-coupling in `predict_static` running every frame
+> regardless of observation status. The fix (plan §C.1 + §C.2,
+> archived in memory `project_ekf_keyframe_mechanism.md`):
+> `predict_static` now skips the cov update entirely for tracks with
+> `frames_since_obs > 0` (the implicit-keyframe branch); the
+> orchestrator wires `gravity_predict` into the Gaussian path via the
+> new `overwrite_object_pose` so σ_yaw=π ends up in cov_bo at the
+> release frame and is then frozen instead of pumped through Ad. At
+> apple_drop fr 340 the static-track top-down σ_major dropped from
+> ~17 cm to ~0.7-0.85 cm; the released bottle dropped from 119.7 cm
+> to 14.9 cm with σ_yaw=π preserved. See `bernoulli_ekf.tex` §II.2
+> for the math and §II.5 for the world-frame composition formula.
+>
+> **Held-track edge case still open:** rigid_attachment_predict still
+> applies the Ad transport, so a held object whose σ_yaw drifts
+> upward inside the holding window will pump that into σ_xy. Symptom:
+> apple_to_cabinate_look oid=2 (held 147 frames) σ_xy_topdown ≈ 42 cm
+> at fr 340. Mitigation TBD.
+>
+> The diagnostic narrative below is preserved as the historical
+> explanation of WHY the artifacts existed.
+
 ## TL;DR
 
 R_icp itself is **isotropic** in camera frame

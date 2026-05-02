@@ -38,7 +38,7 @@ sys.path.insert(0, SCENEREP_ROOT)
 
 from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
 from pose_update.orchestrator_gaussian import TwoTierOrchestratorGaussian
-from pose_update.slam_interface import (
+from pose_update.state.slam_interface import (
     PoseEstimate, ParticlePose,
     PassThroughSlam, ParticlePassThroughSlam,
     sample_particles_from_gaussian,

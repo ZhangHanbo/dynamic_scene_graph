@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple, Set
 import numpy as np
 import gtsam
 
-from pose_update.slam_interface import PoseEstimate
-from pose_update.adaptive_kernel import AdaptiveKernel, irls_weight
+from pose_update.state.slam_interface import PoseEstimate
+from pose_update.perception.adaptive_kernel import AdaptiveKernel, irls_weight
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -445,7 +445,7 @@ class PoseGraphOptimizer:
         T_wo_prior = priors[obs.obj_id].T
         diff = np.linalg.inv(T_wo_prior) @ T_wo_obs
         # Tangent-space norm
-        from pose_update.ekf_se3 import se3_log
+        from pose_update.state.ekf_se3 import se3_log
         xi = se3_log(diff)
         return float(np.linalg.norm(xi))
 
@@ -484,7 +484,7 @@ class PoseGraphOptimizer:
                            T_oe: Optional[np.ndarray],
                            slam_pose: PoseEstimate) -> Dict[str, np.ndarray]:
         """Compute post-optimization residuals for diagnostics."""
-        from pose_update.ekf_se3 import se3_log
+        from pose_update.state.ekf_se3 import se3_log
 
         out: Dict[str, List[float]] = {
             "observation": [], "relation": [], "manipulation": []

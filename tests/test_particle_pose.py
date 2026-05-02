@@ -16,12 +16,12 @@ from scipy.spatial.transform import Rotation
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.slam_interface import (
+from pose_update.state.slam_interface import (
     PoseEstimate, ParticlePose, as_gaussian,
     sample_particles_from_gaussian,
     PassThroughSlam, ParticlePassThroughSlam,
 )
-from pose_update.ekf_se3 import se3_exp, se3_log
+from pose_update.state.ekf_se3 import se3_exp, se3_log
 from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
 
 

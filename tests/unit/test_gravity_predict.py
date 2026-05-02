@@ -4,16 +4,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.gravity_predict import (
+from pose_update.manipulation.gravity_predict import (
     EPS_ROUGHNESS_DEFAULT,
     predict_landing_pose,
 )
-from pose_update.object_dynamics import (
+from pose_update.manipulation.object_dynamics import (
     DEFAULT_DYNAMICS,
     ObjectDynamicsProperty,
     lookup_dynamics,
 )
-from pose_update.voxel_observability import VoxelObservability
+from pose_update.perception.voxel_observability import VoxelObservability
 
 
 def _grid_with_flat_surface_at(surface_z, *, voxel_size=0.05,

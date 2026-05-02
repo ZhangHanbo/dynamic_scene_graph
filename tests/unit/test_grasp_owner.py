@@ -1,4 +1,4 @@
-"""Unit tests for ``pose_update.grasp_owner_detector.GraspOwnerDetector``.
+"""Unit tests for ``pose_update.manipulation.grasp_owner_detector.GraspOwnerDetector``.
 
 Pins:
 - Fix 1: Tier 2 (geometric containment) is invariant under T_wb
@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.grasp_owner_detector import (
+from pose_update.manipulation.grasp_owner_detector import (
     GraspOwnerDetector, HeldDecision, TrackerState,
 )
 

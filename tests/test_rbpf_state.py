@@ -13,11 +13,11 @@ import pytest
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.rbpf_state import (
+from pose_update.state.rbpf_state import (
     ParticleObjectBelief, Particle, RBPFState,
 )
-from pose_update.slam_interface import PoseEstimate, ParticlePose
-from pose_update.ekf_se3 import se3_exp, se3_log
+from pose_update.state.slam_interface import PoseEstimate, ParticlePose
+from pose_update.state.ekf_se3 import se3_exp, se3_log
 
 
 def _T(x=0.0, y=0.0, z=0.0) -> np.ndarray:

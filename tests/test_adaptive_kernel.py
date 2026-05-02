@@ -17,7 +17,7 @@ import pytest
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.adaptive_kernel import AdaptiveKernel, irls_weight, adapt_noise
+from pose_update.perception.adaptive_kernel import AdaptiveKernel, irls_weight, adapt_noise
 
 
 class TestAlphaFitting:

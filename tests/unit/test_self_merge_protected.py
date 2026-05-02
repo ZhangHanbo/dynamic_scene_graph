@@ -30,7 +30,7 @@ def _build_tracker_with_two_close_apples():
         K=viz.K_DEFAULT, bernoulli_cfg=cfg,
         T_bc=np.eye(4))
     # Seed two apple tracks at known base positions.
-    from pose_update.gaussian_state import GaussianObjectBelief
+    from pose_update.state.gaussian_state import GaussianObjectBelief
     P = np.eye(6) * 1e-4
     T1 = np.eye(4); T1[:3, 3] = [0.50, 0.00, 0.00]
     T2 = np.eye(4); T2[:3, 3] = [0.545, 0.00, 0.00]   # 4.5 cm apart

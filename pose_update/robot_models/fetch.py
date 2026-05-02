@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from pose_update.gripper_geometry import AABB, GripperGeometry
+from pose_update.manipulation.gripper_geometry import AABB, GripperGeometry
 
 
 # ─────────────────────────────────────────────────────────────────────

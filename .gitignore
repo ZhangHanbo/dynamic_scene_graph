@@ -27,12 +27,33 @@ logs/
 *.jpeg
 *.mp4
 *.gif
-tests/visualization_pipeline/
 latex_tmp/
 *.aux
 *.out
 *.toc
 *.synctex.gz
+
+# Vis pipeline: ignore all per-trajectory cache subdirs and intermediate
+# artefacts; keep only the *.mp4 movies (the publishable result).
+tests/visualization_pipeline/*/ekf_debug/
+tests/visualization_pipeline/*/ekf_state/
+tests/visualization_pipeline/*/matching_debug/
+tests/visualization_pipeline/*/matching_debug_*/
+tests/visualization_pipeline/*/owl_detections/
+tests/visualization_pipeline/*/perception/
+tests/visualization_pipeline/*/relation_cache/
+tests/visualization_pipeline/*/sam2_observations/
+tests/visualization_pipeline/*/all_methods/
+tests/visualization_pipeline/*/all_methods_*/
+tests/visualization_pipeline/*/REPORT.md
+# Negate the global *.mp4 ignore for vis-pipeline movies only.
+!tests/visualization_pipeline/*/*.mp4
+# But keep macOS AppleDouble sidecars out.
+tests/visualization_pipeline/**/._*
+
+# macOS metadata
+.DS_Store
+._*
 
 # Local data + session
 .claude/

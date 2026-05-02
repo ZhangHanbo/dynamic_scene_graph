@@ -31,28 +31,28 @@ from typing import Dict, List, Optional, Set, Tuple, Any
 import numpy as np
 from PIL import Image
 
-from pose_update.slam_interface import (
+from pose_update.state.slam_interface import (
     PoseEstimate, ParticlePose,
     collect_movable_masks, mask_out_movable, SlamBackend,
 )
-from pose_update.ekf_se3 import process_noise_for_phase, huber_weight
+from pose_update.state.ekf_se3 import process_noise_for_phase, huber_weight
 from pose_update.factor_graph import (
     PoseGraphOptimizer, Observation, RelationEdge, OptimizationResult,
 )
-from pose_update.rbpf_state import RBPFState
-from pose_update.icp_pose import PoseEstimator, centroid_cam_from_mask
-from pose_update.det_dedup import suppress_subpart_detections
-from pose_update.association import (
+from pose_update.state.rbpf_state import RBPFState
+from pose_update.perception.icp_pose import PoseEstimator, centroid_cam_from_mask
+from pose_update.perception.det_dedup import suppress_subpart_detections
+from pose_update.perception.association import (
     hungarian_associate, oracle_associate,
     AssociationResult,
 )
-from pose_update.bernoulli import (
+from pose_update.state.bernoulli import (
     r_predict, r_assoc_update_loglik, r_miss_update, r_birth,
 )
-from pose_update.visibility import visibility_p_v
-from pose_update.relation_client import RelationClient, build_relation_client
-from pose_update.gravity_predict import predict_landing_pose
-from pose_update.object_dynamics import lookup_dynamics
+from pose_update.perception.visibility import visibility_p_v
+from pose_update.relations.relation_client import RelationClient, build_relation_client
+from pose_update.manipulation.gravity_predict import predict_landing_pose
+from pose_update.manipulation.object_dynamics import lookup_dynamics
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -344,7 +344,7 @@ class BernoulliConfig:
     # Gravity-aware one-shot predict at the release transition. When
     # True and `voxel_obs` is set on the orchestrator, the EKF mean +
     # covariance for the just-released object are replaced by the
-    # post-fall prediction from `pose_update.gravity_predict`. Set
+    # post-fall prediction from `pose_update.manipulation.gravity_predict`. Set
     # `False` to fall back to the existing static-Q-only predict.
     gravity_predict: bool = True
     workspace_floor_z: float = -1.0
@@ -650,7 +650,7 @@ class TwoTierOrchestrator:
         self.T_oe: Dict[int, Optional[np.ndarray]] = {}
 
         # Gravity-aware predict on release. The driver constructs and
-        # populates `voxel_obs` (a `pose_update.voxel_observability.
+        # populates `voxel_obs` (a `pose_update.perception.voxel_observability.
         # VoxelObservability`) per frame; when None, the gravity hook
         # short-circuits and behaviour is identical to the legacy path.
         self.voxel_obs = None
@@ -852,7 +852,7 @@ class TwoTierOrchestrator:
         # ── 2b. Gravity-aware one-shot predict at release transition ───
         # Detect oids transitioning out of {holding, releasing}; for each,
         # replace the EKF mean + covariance with the post-fall prediction
-        # from pose_update.gravity_predict. No-ops when voxel_obs is None
+        # from pose_update.manipulation.gravity_predict. No-ops when voxel_obs is None
         # or when bernoulli.gravity_predict is False.
         self._maybe_gravity_predict(gripper_state)
 
@@ -2278,7 +2278,7 @@ class TwoTierOrchestrator:
             # base64 PNG or ndarray). No re-segmentation here.
             mask = det.get("mask")
             if isinstance(mask, str):
-                from pose_update.relation_client import decode_mask_b64
+                from pose_update.relations.relation_client import decode_mask_b64
                 mask = decode_mask_b64(mask, size=(W, H))
             elif mask is not None:
                 mask = np.asarray(mask) > 0

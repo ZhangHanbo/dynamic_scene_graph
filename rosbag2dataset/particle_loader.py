@@ -8,7 +8,7 @@ where each row is ``[x, y, yaw, weight]`` in the ``map`` frame. Weights are
 uniform (AMCL's PoseArray strips them) unless a newer ParticleCloud source
 was used during extraction.
 
-The RBPF orchestrator in ``pose_update.slam_interface.ParticlePose`` wants
+The RBPF orchestrator in ``pose_update.state.slam_interface.ParticlePose`` wants
 particles as (N, 4, 4) SE(3) matrices + (N,) weights. This module converts.
 """
 
@@ -53,7 +53,7 @@ def load_particle_pose(dataset_root: str, frame_idx: int):
     if arr.ndim != 2 or arr.shape[1] != 4 or arr.shape[0] == 0:
         return None
 
-    from pose_update.slam_interface import ParticlePose  # lazy
+    from pose_update.state.slam_interface import ParticlePose  # lazy
     particles = xyyaw_to_SE3(arr[:, :3])
     weights = arr[:, 3].astype(np.float64)
     return ParticlePose(particles=particles, weights=weights)

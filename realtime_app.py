@@ -54,9 +54,9 @@ from utils.utils import *  # includes invert
 from utils.utils import _mask_to_world_pts_colors, find_object_by_id
 from utils.hand_mask_utils import generate_hand_mask, generate_end_effector_mask
 from utils.inpaint_utils import inpaint_background
-from pose_update.camera_pose_refiner import refine_camera_pose, should_skip_object_fusion
+from pose_update.perception.camera_pose_refiner import refine_camera_pose, should_skip_object_fusion
 from scene.object_relation_graph import get_relation_graph
-from pose_update.gravity_simulator import gravity_simulation
+from pose_update.manipulation.gravity_simulator import gravity_simulation
 
 import pyrender, trimesh
 

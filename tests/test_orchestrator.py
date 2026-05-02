@@ -20,7 +20,7 @@ SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
 from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
-from pose_update.slam_interface import PassThroughSlam
+from pose_update.state.slam_interface import PassThroughSlam
 
 
 def _make_detection(obj_id, label, T_co, mask_shape=(100, 100)):

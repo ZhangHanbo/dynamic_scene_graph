@@ -34,7 +34,7 @@ if _REPO_ROOT not in sys.path:
 from pose_update.orchestrator import (
     TwoTierOrchestrator, TriggerConfig, BernoulliConfig,
 )
-from pose_update.slam_interface import PassThroughSlam
+from pose_update.state.slam_interface import PassThroughSlam
 
 from tests.test_orchestrator_integration import (
     TrajectoryRunner, DATA_ROOT, HAS_DATA,

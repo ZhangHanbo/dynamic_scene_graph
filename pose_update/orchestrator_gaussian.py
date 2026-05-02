@@ -26,19 +26,19 @@ from typing import Dict, List, Optional, Set, Any
 
 import numpy as np
 
-from pose_update.slam_interface import (
+from pose_update.state.slam_interface import (
     PoseEstimate,
     collect_movable_masks, mask_out_movable, SlamBackend,
 )
-from pose_update.ekf_se3 import process_noise_for_phase
+from pose_update.state.ekf_se3 import process_noise_for_phase
 from pose_update.factor_graph import (
     PoseGraphOptimizer, Observation, RelationEdge, OptimizationResult,
 )
-from pose_update.gaussian_state import GaussianState
-from pose_update.gravity_predict import predict_landing_pose
-from pose_update.object_dynamics import lookup_dynamics
+from pose_update.state.gaussian_state import GaussianState
+from pose_update.manipulation.gravity_predict import predict_landing_pose
+from pose_update.manipulation.object_dynamics import lookup_dynamics
 from pose_update.orchestrator import TriggerConfig  # reuse
-from pose_update.voxel_observability import VoxelObservability
+from pose_update.perception.voxel_observability import VoxelObservability
 
 
 class TwoTierOrchestratorGaussian:
@@ -284,7 +284,7 @@ class TwoTierOrchestratorGaussian:
     def _maybe_gravity_predict(self,
                                 gripper_state: Dict[str, Any]) -> None:
         """Replace the EKF mean+cov for a just-released oid with the
-        post-fall prediction from `pose_update.gravity_predict`.
+        post-fall prediction from `pose_update.manipulation.gravity_predict`.
 
         Mirrors `pose_update/orchestrator.py:_maybe_gravity_predict`
         (the RBPF orchestrator's hook). No-ops when:

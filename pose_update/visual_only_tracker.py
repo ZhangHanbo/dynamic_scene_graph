@@ -46,7 +46,7 @@ import numpy as np
 import open3d as o3d
 
 # Reuse the back-projection / voxelization helpers from icp_pose.
-from pose_update.icp_pose import _back_project, _voxelize
+from pose_update.perception.icp_pose import _back_project, _voxelize
 
 
 MODES = ("first_frame", "last_frame")

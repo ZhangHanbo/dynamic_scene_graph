@@ -18,7 +18,7 @@ from scipy.spatial.transform import Rotation
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.ekf_se3 import (
+from pose_update.state.ekf_se3 import (
     se3_exp, se3_log, se3_adjoint,
     ekf_predict, ekf_update, ekf_update_base_frame,
     compose_observation_noise,

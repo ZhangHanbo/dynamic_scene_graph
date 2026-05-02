@@ -6,10 +6,10 @@ detections + SLAM/EE poses, drives the orchestrator-equivalent
 held-set + relation graph. Demonstrates the public API surface
 post-refactor:
 
-    pose_update.relation_orchestrator.RelationOrchestrator
-    pose_update.gripper_state.GripperPhaseTracker
-    pose_update.grasp_owner_detector.GraspOwnerDetector
-    pose_update.relation_utils.expand_held_with_relations
+    pose_update.relations.relation_orchestrator.RelationOrchestrator
+    pose_update.manipulation.gripper_state.GripperPhaseTracker
+    pose_update.manipulation.grasp_owner_detector.GraspOwnerDetector
+    pose_update.relations.relation_utils.expand_held_with_relations
 
 No visualization / matplotlib — just the algorithm. For the full
 visualization pipeline see ``tests/visualize_ekf_tracking.py``.
@@ -29,10 +29,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pose_update.gripper_state import GripperPhaseTracker
-from pose_update.grasp_owner_detector import GraspOwnerDetector
-from pose_update.relation_orchestrator import RelationOrchestrator
-from pose_update.relation_utils import (
+from pose_update.manipulation.gripper_state import GripperPhaseTracker
+from pose_update.manipulation.grasp_owner_detector import GraspOwnerDetector
+from pose_update.relations.relation_orchestrator import RelationOrchestrator
+from pose_update.relations.relation_utils import (
     RelationTriggerConfig,
     expand_held_with_relations,
 )

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pose_update.gaussian_state import GaussianState, GaussianObjectBelief
+from pose_update.state.gaussian_state import GaussianState, GaussianObjectBelief
 
 
 def _make_state(oid=1):

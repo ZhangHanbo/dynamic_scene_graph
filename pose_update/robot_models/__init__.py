@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pose_update.gripper_geometry import GripperGeometry
+from pose_update.manipulation.gripper_geometry import GripperGeometry
 
 # Default URDF locations searched (first existing wins) when caller
 # doesn't pass an explicit `urdf_path`.

@@ -46,7 +46,7 @@ from tests.test_orchestrator_integration import (
     _gripper_state_from_distance,
     K,  # camera intrinsics
 )
-from pose_update.icp_pose import PoseEstimator, METHODS as POSE_METHODS
+from pose_update.perception.icp_pose import PoseEstimator, METHODS as POSE_METHODS
 
 OUT_DIR = os.path.join(SCENEREP_ROOT, "tests", "visualization_pipeline")
 
@@ -1001,7 +1001,7 @@ def run_all_methods(data: TrajectoryData,
     stepped per frame, 6 ObjectTrackOverlays rendered per composite.
     """
     from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
-    from pose_update.slam_interface import PassThroughSlam
+    from pose_update.state.slam_interface import PassThroughSlam
 
     out_dir = out_dir or OUT_DIR
     os.makedirs(out_dir, exist_ok=True)
@@ -1149,7 +1149,7 @@ def run_incremental(data: TrajectoryData,
     robot has observed up to t. The scene is gradually constructed.
     """
     from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
-    from pose_update.slam_interface import PassThroughSlam
+    from pose_update.state.slam_interface import PassThroughSlam
 
     out_dir = out_dir or OUT_DIR
     os.makedirs(out_dir, exist_ok=True)

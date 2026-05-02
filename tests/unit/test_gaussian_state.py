@@ -21,9 +21,9 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation as R_
 
-from pose_update.gaussian_state import GaussianState
-from pose_update.ekf_se3 import se3_exp, se3_log, se3_adjoint
-from pose_update.slam_interface import PoseEstimate
+from pose_update.state.gaussian_state import GaussianState
+from pose_update.state.ekf_se3 import se3_exp, se3_log, se3_adjoint
+from pose_update.state.slam_interface import PoseEstimate
 
 
 # ─────────────────────────────────────────────────────────────────────

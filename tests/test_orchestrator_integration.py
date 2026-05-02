@@ -32,8 +32,8 @@ SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
 from pose_update.orchestrator import TwoTierOrchestrator, TriggerConfig
-from pose_update.slam_interface import PassThroughSlam
-from pose_update.ekf_se3 import pose_entropy
+from pose_update.state.slam_interface import PassThroughSlam
+from pose_update.state.ekf_se3 import pose_entropy
 
 # ─────────────────────────────────────────────────────────────────────
 # Data paths

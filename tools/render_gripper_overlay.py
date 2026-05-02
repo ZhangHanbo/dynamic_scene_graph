@@ -32,7 +32,7 @@ from scipy.spatial.transform import Rotation
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from pose_update.gripper_geometry import AABB, GripperGeometry  # noqa: E402
+from pose_update.manipulation.gripper_geometry import AABB, GripperGeometry  # noqa: E402
 from pose_update.robot_models import create_gripper_geometry      # noqa: E402
 
 

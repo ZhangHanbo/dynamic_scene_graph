@@ -37,7 +37,7 @@ from matplotlib.collections import LineCollection
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.ekf_se3 import pose_entropy
+from pose_update.state.ekf_se3 import pose_entropy
 from tests.test_orchestrator_integration import TrajectoryRunner
 
 

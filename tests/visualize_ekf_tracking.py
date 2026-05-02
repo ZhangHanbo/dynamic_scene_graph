@@ -48,36 +48,36 @@ from scipy.spatial.transform import Rotation
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.association import hungarian_associate
-from pose_update.bernoulli import (
+from pose_update.perception.association import hungarian_associate
+from pose_update.state.bernoulli import (
     r_predict, r_assoc_update_loglik, r_miss_update, r_birth,
 )
-from pose_update.ekf_se3 import (
+from pose_update.state.ekf_se3 import (
     huber_weight, process_noise_for_phase, saturate_covariance,
 )
-from pose_update.gaussian_state import GaussianState
-from pose_update.det_dedup import suppress_subpart_detections
-from pose_update.icp_pose import (
+from pose_update.state.gaussian_state import GaussianState
+from pose_update.perception.det_dedup import suppress_subpart_detections
+from pose_update.perception.icp_pose import (
     PoseEstimator, centroid_cam_from_mask, _back_project,
 )
-from pose_update.obs_chain import ChainStore
-from pose_update.gravity_predict import predict_landing_pose
-from pose_update.object_dynamics import lookup_dynamics
-from pose_update.voxel_observability import VoxelObservability
+from pose_update.state.obs_chain import ChainStore
+from pose_update.manipulation.gravity_predict import predict_landing_pose
+from pose_update.manipulation.object_dynamics import lookup_dynamics
+from pose_update.perception.voxel_observability import VoxelObservability
 from pose_update.orchestrator import (
     BernoulliConfig, birth_admissible, _PendingBirth, RelationFilter,
 )
 from pose_update.robot_models import create_gripper_geometry
-from pose_update.grasp_owner_detector import (
+from pose_update.manipulation.grasp_owner_detector import (
     GraspOwnerDetector, InstrumentedTrackerState,
 )
-from pose_update.relation_utils import (
+from pose_update.relations.relation_utils import (
     expand_held_with_relations, should_recompute_relations,
     RelationTriggerState, RelationTriggerConfig,
 )
 from pose_update.factor_graph import RelationEdge
-from pose_update.slam_interface import PoseEstimate
-from pose_update.visibility import visibility_p_v
+from pose_update.state.slam_interface import PoseEstimate
+from pose_update.perception.visibility import visibility_p_v
 
 
 # ─── data paths ──────────────────────────────────────────────────────────
@@ -231,10 +231,10 @@ def _load_gripper_widths(path: str) -> Optional[Dict[int, float]]:
     return out if out else None
 
 
-from pose_update.gripper_state import GripperPhaseTracker as _GripperPhaseTracker  # noqa: E402
+from pose_update.manipulation.gripper_state import GripperPhaseTracker as _GripperPhaseTracker  # noqa: E402
 
 class _GripperStateInferrer:
-    """Driver-side shim around :class:`pose_update.gripper_state.GripperPhaseTracker`.
+    """Driver-side shim around :class:`pose_update.manipulation.gripper_state.GripperPhaseTracker`.
 
     The full FSM lives in ``pose_update/gripper_state.py``. This shim
     wraps the production class with the test driver's tracker-coupling
@@ -260,7 +260,7 @@ class _GripperStateInferrer:
     def step(self, width, tracker, T_wb, T_bg, **kwargs):
         # Adapt the InstrumentedTracker → TrackerState protocol expected
         # by the production phase tracker.
-        from pose_update.grasp_owner_detector import InstrumentedTrackerState
+        from pose_update.manipulation.grasp_owner_detector import InstrumentedTrackerState
         ts = InstrumentedTrackerState(tracker)
         live_oids = set(int(o) for o in tracker.object_labels.keys())
         return self._inner.step(
@@ -270,7 +270,7 @@ class _GripperStateInferrer:
             **kwargs)
 
 
-from pose_update.relation_orchestrator import RelationOrchestrator as _RelationPipeline  # noqa: E402,F401
+from pose_update.relations.relation_orchestrator import RelationOrchestrator as _RelationPipeline  # noqa: E402,F401
 
 
 def _load_detection_json(path: str) -> List[Dict[str, Any]]:
@@ -564,13 +564,13 @@ class InstrumentedTracker:
 
     def _candidate_near_live_track(self, det: Dict[str, Any]
                                     ) -> Optional[Dict[str, Any]]:
-        """Thin wrapper around :func:`pose_update.birth_gating.is_near_live_track`.
+        """Thin wrapper around :func:`pose_update.perception.birth_gating.is_near_live_track`.
 
         See that function for behaviour. This method simply provides
         the tracker context (T_wb, T_bc, held oid, T_we, cfg) so the
         production helper can be called.
         """
-        from pose_update.birth_gating import (
+        from pose_update.perception.birth_gating import (
             BirthGateConfig, is_near_live_track,
         )
         T_wb = getattr(self.state, "T_wb", None)
@@ -595,7 +595,7 @@ class InstrumentedTracker:
     def _compute_visibility(self,
                             depth: np.ndarray,
                             image_shape: tuple) -> Dict[int, float]:
-        """Per-track p_v via depth ray-tracing (see `pose_update.visibility`).
+        """Per-track p_v via depth ray-tracing (see `pose_update.perception.visibility`).
 
         Projects each track's object-local reference cloud (from
         `PoseEstimator._refs[oid].ref_points` — the accumulated surface
@@ -3549,7 +3549,7 @@ def main():
         # that happens, replace the just-released oid's mean + cov with
         # the post-fall prediction (one-shot). voxel_obs supplies the
         # supporting surface; the parametric model in
-        # pose_update.gravity_predict handles bounce/roll dispersion.
+        # pose_update.manipulation.gravity_predict handles bounce/roll dispersion.
         cur_phase = gripper_state.get("phase", "idle")
         if (prev_phase in ("holding", "releasing")
                 and cur_phase not in ("holding", "releasing")

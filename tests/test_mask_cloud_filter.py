@@ -24,7 +24,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pose_update.icp_pose import (  # noqa: E402
+from pose_update.perception.icp_pose import (  # noqa: E402
     _back_project, _clean_mask, PoseEstimator, centroid_cam_from_mask,
 )
 
@@ -246,7 +246,7 @@ def test_icp_fitness_regression() -> bool:
         return _ok("ICP fitness regression", False, "no masks")
 
     # Helper: fresh estimator, birth at frame 1, refine at frame 2.
-    import pose_update.icp_pose as icp_module
+    import pose_update.perception.icp_pose as icp_module
 
     def _run(enable_clean: bool):
         # Monkey-patch _back_project's default to toggle clean_mask via

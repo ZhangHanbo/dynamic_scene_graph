@@ -16,7 +16,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pose_update.relation_client import LLMRelationClient
+from pose_update.relations.relation_client import LLMRelationClient
 
 
 RGB_PATH = Path("/Volumes/External/Workspace/datasets/apple_in_the_tray/rgb/rgb_000399.png")

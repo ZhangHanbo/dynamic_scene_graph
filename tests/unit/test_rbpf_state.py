@@ -14,9 +14,9 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation as R_
 
-from pose_update.rbpf_state import RBPFState
-from pose_update.ekf_se3 import se3_adjoint
-from pose_update.slam_interface import PoseEstimate
+from pose_update.state.rbpf_state import RBPFState
+from pose_update.state.ekf_se3 import se3_adjoint
+from pose_update.state.slam_interface import PoseEstimate
 
 
 def _T(t=(0.0, 0.0, 0.0), rpy_deg=(0.0, 0.0, 0.0)) -> np.ndarray:

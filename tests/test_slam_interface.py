@@ -18,7 +18,7 @@ import pytest
 SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SCENEREP_ROOT)
 
-from pose_update.slam_interface import (
+from pose_update.state.slam_interface import (
     PoseEstimate,
     collect_movable_masks,
     mask_out_movable,

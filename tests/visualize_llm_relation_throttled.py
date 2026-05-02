@@ -46,7 +46,7 @@ for name in ("Pose3", "NonlinearFactorGraph", "Values",
 from pose_update.orchestrator import (  # noqa: E402
     TwoTierOrchestrator, BernoulliConfig,
 )
-from pose_update.relation_client import (  # noqa: E402
+from pose_update.relations.relation_client import (  # noqa: E402
     LLMRelationClient, decode_mask_b64,
 )
 from visualize_llm_relation_frame import render_relation_overlay  # noqa: E402

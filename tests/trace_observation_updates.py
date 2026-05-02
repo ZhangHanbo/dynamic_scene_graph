@@ -58,8 +58,8 @@ from tests.visualize_pipeline import resolve_held_by_proximity
 from pose_update.orchestrator import (
     TwoTierOrchestrator, TriggerConfig, BernoulliConfig,
 )
-from pose_update.slam_interface import PassThroughSlam
-from pose_update.ekf_se3 import se3_log
+from pose_update.state.slam_interface import PassThroughSlam
+from pose_update.state.ekf_se3 import se3_log
 
 DATA_BASE = os.path.join(
     os.path.dirname(SCENEREP_ROOT),

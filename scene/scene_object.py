@@ -173,7 +173,7 @@ class SceneObject:
         """
         if self._pose_uncertain_legacy:
             return True
-        from pose_update.ekf_se3 import pose_is_uncertain
+        from pose_update.state.ekf_se3 import pose_is_uncertain
         return pose_is_uncertain(self.pose_cov)
 
     @pose_uncertain.setter
@@ -205,7 +205,7 @@ class SceneObject:
         self._count += 1
 
         # Beta-Bernoulli update (Task 2b)
-        from pose_update.ekf_se3 import update_label_belief
+        from pose_update.state.ekf_se3 import update_label_belief
         self.label_belief, map_label = update_label_belief(
             self.label_belief, label, score_f)
 

@@ -114,16 +114,26 @@ moves a tangent vector through $T=(R,t)$.
 \textbf{World-static.} A world-static object satisfies
 $T_{wb,k}\mu_{bo,k} = T_{wb,k-1}\mu_{bo,k-1}$, hence
 $\mu_{bo,k} = u_k\,\mu_{bo,k-1}$ with
-$u_k = T_{wb,k}^{-1}T_{wb,k-1}$. Cov:
+$u_k = T_{wb,k}^{-1}T_{wb,k-1}$.
+
+The covariance recursion now branches on whether the track was
+observed last frame (\file{pose\_update/gaussian\_state.py}\,$\to$
+\texttt{predict\_static}, with caller-supplied
+\texttt{unobserved\_oids}):
 \begin{equation}\label{eq:proc}
-\Sigma_k = \Phi\!\bigl(\Ad(u_k)\,\Sigma_{k-1}\,\Ad(u_k)^\top + Q_{\text{static}}\bigr).
+\Sigma_{bo,k} \;=\;
+\begin{cases}
+\Phi\!\bigl(\Ad(u_k)\,\Sigma_{bo,k-1}\,\Ad(u_k)^\top + Q_{\text{static}}\bigr) & \text{observed at } k{-}1, \\[2pt]
+\Sigma_{bo,k-1} & \text{unobserved at } k{-}1 \text{ (frozen keyframe)}.
+\end{cases}
 \end{equation}
-$Q_{\text{static}}$ schedules on \texttt{frames\_since\_obs}:
-$1\!{\rm e}{-6}I_6$ (idle, $<5$), $1\!{\rm e}{-5}I_6$ ($<50$),
-$1\!{\rm e}{-8}I_6$ thereafter (\file{ekf\_se3.py}\,$\to$
-\texttt{process\_noise\_for\_phase}). $\Phi$ is the optional
-covariance-saturation operator (\file{ekf\_se3.py}\,$\to$
-\texttt{saturate\_covariance})
+The mean update $\mu_{bo,k}=u_k\mu_{bo,k-1}$ runs in \emph{both}
+branches, deterministically. $Q_{\text{static}}$ schedules on
+\texttt{frames\_since\_obs}: $1\!{\rm e}{-6}I_6$ (idle, $<5$),
+$1\!{\rm e}{-5}I_6$ ($<50$), $1\!{\rm e}{-8}I_6$ thereafter
+(\file{ekf\_se3.py}\,$\to$ \texttt{process\_noise\_for\_phase}).
+$\Phi$ is the optional covariance-saturation operator
+(\file{ekf\_se3.py}\,$\to$ \texttt{saturate\_covariance})
 \begin{equation}\label{eq:phi}
 \Phi(P) \;=\; \min\!\bigl(1,\;\Tr P_{\max}/\Tr P\bigr)\,P,
 \end{equation}
@@ -134,11 +144,32 @@ r_{k|k-1} = p_s\,r_{k-1|k-1}, \qquad p_s = 1 \text{ default}
 \end{equation}
 (\file{bernoulli.py}\,$\to$\,\texttt{r\_predict}).
 
-Note the cross-coupling in $\Ad(u_k)$: the translation block of
-$\Sigma$ accumulates $[t(u_k)]_\times P_{rr}[t(u_k)]_\times^\top$ each
-frame, so for an unobserved track the body-frame translation
-uncertainty grows in directions \emph{perpendicular to the robot's
-motion}. This is correct EKF behaviour, not a bug.
+\paragraph{Why the unobserved branch freezes $\Sigma_{bo}$ (keyframe
+mechanism).}
+The Ad-conjugate transport carries a cross-coupling
+$[t(u_k)]_\times P_{rr}[t(u_k)]_\times^\top$ that pumps rotation
+uncertainty into the translation block each frame. For tracks with
+high $\sigma_{yaw}$ (e.g.\ a freshly-released bottle at
+$\sigma_{yaw}=\pi$ from \eqref{eq:gravity_sigma}), the per-frame
+contribution $\Delta x^2\!\cdot\!\pi^2$ compounds catastrophically
+($\sim 1.2\,$m over 60 frames at apple\_drop). The keyframe-mechanism
+fix exploits the algebraic identity that, telescoping the
+deterministic mean update over $K$ frames since the last observation
+at $k_f$,
+\begin{equation}\label{eq:telescope}
+\mu_{bo,K} \;=\; u_K \cdots u_{k_f+1}\,\mu_{bo,k_f}
+            \;=\; T_{wb,K}^{-1}\,T_{wb,k_f}\,\mu_{bo,k_f}.
+\end{equation}
+Composing with the current SLAM pose then gives
+$T_{wo,K}=T_{wb,K}\mu_{bo,K}=T_{wb,k_f}\mu_{bo,k_f}$ — \emph{constant}
+for a static object, exactly as required. The keyframe is not stored
+explicitly; $\Sigma_{bo,K}=\Sigma_{bo,k_f}$ is preserved by skipping
+the cov update. World composition (\eqref{eq:world_compose} in §II.5)
+then uses the \emph{current} $\Sigma_{wb,K}$ for the lever-arm
+contribution, so the world-frame uncertainty grows only via the SLAM
+marginal — never via per-frame predict drift. Verified to machine
+precision on apple\_drop oid=1 (fso=224 frames):
+$\|\mu_{bo,K} - T_{wb,K}^{-1}T_{wb,k_f}\mu_{bo,k_f}\|=2.22\!\cdot\!10^{-14}$.
 
 \textbf{Rigid-attached.} For tracks in the held set $\mathcal{H}_k$,
 $\mu_{bo,k} = \delta_{bg,k}\,\mu_{bo,k-1}$ with
@@ -149,6 +180,13 @@ phase-aware $Q_{\text{manip}}$:
 \item Seed during holding: $\mathrm{diag}(2.5\!{\rm e}{-4}{\times}3,\,1\!{\rm e}{-3}{\times}3)$ — settled grip.
 \item Transitive members (apples on tray): always the holding row — they don't deform when the gripper closes around the seed.
 \end{itemize}
+The held branch still runs the full Ad-conjugate (no
+keyframe-mechanism shortcut), so the same translation/rotation
+cross-pumping applies — bounded in practice by
+$\|t(\delta_{bg,k})\|\!\ll\!1$ but \emph{not} eliminated. Edge cases
+with $\sigma_{yaw}\!\to\!\pi$ inside the holding window
+(re-grasps, release-transition) remain a known caveat; cap-rotation
+mitigations are an open item.
 
 \subsection*{II.3 Detection conditioning}
 
@@ -265,16 +303,48 @@ EKF likelihood used by \eqref{eq:r_assoc} is
 \end{equation}
 computed in log-space to avoid underflow at $\log\mathcal L\sim -50$.
 
-\paragraph{Per-track observation chain.}\label{sec:chain}
+\paragraph{World-frame composition.}\label{sec:world_compose}
+\file{gaussian\_state.py}\,$\to$\,\texttt{collapsed\_object\_world}
+returns the canonical world-frame view consumed by every downstream
+client (relations, slow tier, gravity-predict input, visualizer):
+\begin{equation}\label{eq:world_compose}
+\mu_{wo} = T_{wb}\,\mu_{bo}, \qquad
+\Sigma_{wo} = \Ad(\mu_{bo}^{-1})\,\Sigma_{wb}\,\Ad(\mu_{bo}^{-1})^\top
+              + \Sigma_{bo}.
+\end{equation}
+$\Sigma_{wb}$ is read from the current SLAM marginal at query time, so
+the world cov tracks any SLAM drift / loop-closure shift even when no
+new object observation has arrived. Combined with the
+keyframe-mechanism freeze of $\Sigma_{bo}$ (\eqref{eq:proc}), an
+unobserved static track's world cov grows \emph{only} via the
+$\Sigma_{wb}$-lever — the user-intended behaviour.
+
+\paragraph{World-frame overwrite (release hook).}
+\file{gaussian\_state.py}\,$\to$\,\texttt{overwrite\_object\_pose(oid,
+$T_{wo}$, $P_{wo}$)} forces the EKF state for one oid from a
+world-frame $(T,P)$ input. Used by \file{orchestrator\_gaussian.py}
+$\to$\,\texttt{\_maybe\_gravity\_predict} (and the RBPF analogue in
+\file{orchestrator.py}) at the release transition to install
+\eqref{eq:gravity_sigma}'s landing prior. The body-frame storage
+becomes $\mu_{bo}=T_{wb}^{-1}T_{wo}$ and $\Sigma_{bo}=P_{wo}$ (the
+right-trivialised tangent transport reduces to the identity at the
+new $\mu_{bo}$). After the overwrite, the keyframe-mechanism freeze
+in \eqref{eq:proc} keeps the gravity-supplied cov
+($\sigma_{yaw}=\pi$, $\sigma_{xy}\!\sim\!5$–$10\,$cm) intact across
+subsequent unobserved frames.
+
+\paragraph{Per-track observation chain (diagnostic).}\label{sec:chain}
 Each track also accumulates an append-only chain
 $\mathcal{H}^{(i)} = [(\,k,\hat T^{co}_k,\hat R^{co}_k\,),\ldots]$ of
-camera-frame ICP measurements (\file{pose\_update/obs\_chain.py}). The
-chain stores no SLAM quantity; world-frame composition
-$T_{wo} = T_{wb}\,\mu_{bo}$ is a post-hoc smoothing pass that absorbs
-later SLAM revisions (loop closures, bundle adjustment) which the
-one-step-Markov $\Sigma_{bo}$ cannot. The slow-tier
+camera-frame ICP measurements (\file{pose\_update/obs\_chain.py}).
+\textbf{The chain is NOT the canonical world-frame source} — that
+role belongs to \texttt{collapsed\_object\_world}
+(\eqref{eq:world_compose}). The chain is computed in parallel by the
+visualizer (\file{tests/visualize\_ekf\_tracking.py}) for
+cross-checking and is the natural substrate for a future
+loop-closure-aware smoother (the slow-tier
 \file{pose\_update/factor\_graph.py} consumes the same structure when
-promoted to a full object-SLAM smoother.
+promoted).
 
 \paragraph{Huber reweight.}
 \begin{equation}\label{eq:huber_w}
@@ -530,22 +600,29 @@ prior that subsequent observations can correct quickly, instead of
 pushing the mean to an extreme that's unlikely to be right.
 
 \paragraph{Trigger.}
-The driver \file{tests/visualize\_ekf\_tracking.py} caches the most
-recent non-\texttt{None} \texttt{held\_obj\_id} and detects the FSM
-exiting $\{\textsc{Holding},\textsc{Releasing}\}$. The hook replaces
-the per-particle $(T_{wo},\,P_{wo})$ via
-\texttt{RBPFState.overwrite\_object\_pose} (or, in the
-\texttt{InstrumentedTracker} harness, mutates
-\texttt{state.objects[oid].\{mu\_bo,\,cov\_bo\}}). Subsequent frames
-revert to the standard static predict.
+Three production sites all detect the FSM exiting
+$\{\textsc{Holding},\textsc{Releasing}\}$ and call into
+\eqref{eq:gravity_sigma}:
+\begin{itemize}[leftmargin=1.5em,itemsep=0pt,topsep=2pt]
+\item \file{pose\_update/orchestrator.py}\,$\to$\,\texttt{\_maybe\_gravity\_predict} (RBPF backend) — replaces every particle's $(T_{wo}, P_{wo})$ via \texttt{RBPFState.overwrite\_object\_pose}.
+\item \file{pose\_update/orchestrator\_gaussian.py}\,$\to$\,\texttt{\_maybe\_gravity\_predict} (Gaussian backend) — calls \texttt{GaussianState.overwrite\_object\_pose} (see §II.5 world-frame overwrite). Wired in \texttt{TwoTierOrchestratorGaussian.step} immediately after the fast tier.
+\item \file{tests/visualize\_ekf\_tracking.py} (instrumented tracker harness) — mutates \texttt{state.objects[oid].\{mu\_bo, cov\_bo\}} inline.
+\end{itemize}
+Subsequent frames see the released track in
+\texttt{unobserved\_oids}, so \eqref{eq:proc}'s keyframe freeze
+preserves the gravity prior (in particular $\sigma_{yaw}=\pi$ does
+\emph{not} pump $\sigma_{xy}$ via cross-coupling).
 
 \paragraph{Toggle.}
 \texttt{BernoulliConfig.gravity\_predict} (default \texttt{True})
-gates the hook; \texttt{BernoulliConfig.workspace\_floor\_z} (default
-$-1.0$\,m) sets the column terminator. With
-\texttt{TwoTierOrchestrator.voxel\_obs}=\texttt{None} the hook
-short-circuits and the legacy static-Q-only release behaviour is
-preserved exactly.
+gates the RBPF hook;
+\texttt{TwoTierOrchestratorGaussian.gravity\_predict\_enabled}
+(constructor flag, default \texttt{True}) gates the Gaussian hook.
+\texttt{BernoulliConfig.workspace\_floor\_z} /
+\texttt{TwoTierOrchestratorGaussian.workspace\_floor\_z} (default
+$-1.0$\,m) sets the column terminator. With \texttt{voxel\_obs}
+unset, both hooks short-circuit and the legacy static-Q-only release
+behaviour is preserved exactly.
 
 \subsection*{II.12 Gripper phase FSM}
 
@@ -584,7 +661,8 @@ to the keep.
 \State $g \gets \textsc{GripperPhaseTracker}.\textsc{step}(w, \ldots)$
 \State $\textsc{relation\_pipeline}.\textsc{maybe\_update}(\ldots)$
 \State $\mathcal{H} \gets \textsc{Expand}(g.\text{held},\,\mathcal{E}_t)\cap\text{live oids}$
-\State \textsc{predict\_static}(skip $\mathcal{H}$);\,\textsc{rigid\_attachment\_predict}(each $o\in\mathcal{H}$)
+\State $\mathcal{U} \gets \{o : \texttt{frames\_since\_obs}[o] > 0\}$ \Comment{keyframe-frozen set}
+\State \textsc{predict\_static}(skip\,$=\!\mathcal{H}$,\;unobserved\,$=\!\mathcal{U}$);\,\textsc{rigid\_attachment\_predict}(each $o\in\mathcal{H}$)
 \State \textsc{suppress\_subpart\_detections};\,\textsc{centroid\_cam\_from\_mask};\,gather \texttt{dets\_for\_assoc}
 \State \textsc{hungarian\_associate} $\to$ matches, unmatched\_tracks, unmatched\_dets
 \For{each match $(o, d)$}
@@ -603,6 +681,7 @@ to the keep.
 \State $\mathcal{P} \gets \{(\min(p,c),\max(p,c))\,:\,(p,c,\cdot)\in\mathcal{E}_t\}$
 \State \textsc{\_self\_merge\_pass}$(\text{held}=g.\text{held},\,\text{protected}=\mathcal{P})$
 \State $g$.\textsc{apply\_merges}(merges); \textsc{relation\_pipeline}.\textsc{remap\_after\_merges}(merges)
+\State \textsc{\_maybe\_gravity\_predict}$(g)$ \Comment{release transition: overwrite the just-released oid via \eqref{eq:gravity_sigma}}
 \end{algorithmic}
 \end{algorithm}
 

@@ -27,8 +27,8 @@ from pose_update.factor_graph import (
     PoseGraphOptimizer, Observation, RelationEdge,
     relation_residual,
 )
-from pose_update.slam_interface import PoseEstimate
-from pose_update.ekf_se3 import se3_log
+from pose_update.state.slam_interface import PoseEstimate
+from pose_update.state.ekf_se3 import se3_log
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
 
 from tests.visualize_pipeline import TrajectoryData, K
-from pose_update.icp_pose import _back_project, _voxelize
+from pose_update.perception.icp_pose import _back_project, _voxelize
 from scipy.spatial.transform import Rotation
 import open3d as o3d
 

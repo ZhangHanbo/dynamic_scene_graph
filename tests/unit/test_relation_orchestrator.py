@@ -1,12 +1,12 @@
-"""Unit tests for ``pose_update.relation_orchestrator.RelationOrchestrator``."""
+"""Unit tests for ``pose_update.relations.relation_orchestrator.RelationOrchestrator``."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
 from pose_update.factor_graph import RelationEdge
-from pose_update.relation_orchestrator import RelationOrchestrator
-from pose_update.relation_utils import RelationTriggerConfig
+from pose_update.relations.relation_orchestrator import RelationOrchestrator
+from pose_update.relations.relation_utils import RelationTriggerConfig
 
 
 @pytest.fixture
