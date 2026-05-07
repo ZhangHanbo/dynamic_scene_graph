@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pose_update.manipulation.object_dynamics import (
+from utils.object_dynamics import (
     DEFAULT_DYNAMICS,
     LABEL_DYNAMICS_TABLE,
     ObjectDynamicsProperty,

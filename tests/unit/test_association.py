@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.perception.association import (
+from perception.association import (
     _INFEASIBLE,
     _label_in_history_meaningful,
     hungarian_associate,

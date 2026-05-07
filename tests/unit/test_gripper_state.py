@@ -1,10 +1,10 @@
-"""Unit tests for ``pose_update.manipulation.gripper_state.GripperPhaseTracker``."""
+"""Unit tests for ``utils.gripper_state.GripperPhaseTracker``."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from pose_update.manipulation.gripper_state import GripperPhaseTracker
+from utils.gripper_state import GripperPhaseTracker
 
 
 class _FakeTrackerState:

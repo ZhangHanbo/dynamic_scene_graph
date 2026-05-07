@@ -1,282 +1,314 @@
-"""Unit tests for the RBPF backend.
+"""Unit tests for pose_update/rbpf_state.py.
 
-Parallel to `test_gaussian_state.py`; pins the RBPF-specific behaviour
-(per-particle world-frame storage, per-frame T_bc lift, vision's
-dual-role likelihood that reweights particles). A passing suite
-confirms that `RBPFState` satisfies the `BasePoseBackend` contract and
-handles head motion correctly -- the bug that was latent for the whole
-production path before B.3.
+Run:
+    cd /Volumes/External/Workspace/nus_deliver/SceneRep_for_TAMP
+    conda run -n ocmp_test python -m pytest tests/test_rbpf_state.py -v
 """
-
-from __future__ import annotations
+import os
+import sys
 
 import numpy as np
 import pytest
-from scipy.spatial.transform import Rotation as R_
 
-from pose_update.state.rbpf_state import RBPFState
-from pose_update.state.ekf_se3 import se3_adjoint
-from pose_update.state.slam_interface import PoseEstimate
+SCENEREP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, SCENEREP_ROOT)
+
+from ekf_tracker.state.rbpf_state import (
+    ParticleObjectBelief, Particle, RBPFState,
+)
+from utils.slam_interface import PoseEstimate, ParticlePose
+from utils.ekf_se3 import se3_exp, se3_log
 
 
-def _T(t=(0.0, 0.0, 0.0), rpy_deg=(0.0, 0.0, 0.0)) -> np.ndarray:
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = R_.from_euler("xyz", rpy_deg, degrees=True).as_matrix()
-    T[:3, 3] = np.asarray(t, dtype=np.float64)
+def _T(x=0.0, y=0.0, z=0.0) -> np.ndarray:
+    T = np.eye(4)
+    T[:3, 3] = [x, y, z]
     return T
 
 
-def _is_psd(P: np.ndarray, tol: float = 1e-9) -> bool:
-    sym = np.allclose(P, P.T, atol=1e-10)
-    if not sym:
-        return False
-    eigs = np.linalg.eigvalsh(0.5 * (P + P.T))
-    return bool(np.all(eigs >= -tol))
-
-
-def _seed(n: int = 4, T_wb=None, T_bc=None,
-           P_min_diag=None) -> RBPFState:
-    """Build and initialise an RBPFState with N particles at `T_wb`."""
-    s = RBPFState(n_particles=n, T_bc=T_bc, P_min_diag=P_min_diag,
-                    rng=np.random.default_rng(0))
-    pe = PoseEstimate(T=(T_wb if T_wb is not None else _T()),
-                       cov=np.diag([1e-8]*6))
-    s.ingest_slam(pe)
-    return s
+def _rng(seed: int = 0) -> np.random.Generator:
+    return np.random.default_rng(seed)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 1. Construction & camera extrinsic
+# SLAM ingestion
 # ─────────────────────────────────────────────────────────────────────
 
-class TestConstruction:
-    def test_defaults(self):
-        s = RBPFState(n_particles=3)
-        np.testing.assert_allclose(s.T_bc, np.eye(4))
-        np.testing.assert_allclose(s._Ad_bc, np.eye(6))
-        assert s.T_wb is None
-        assert s.prev_T_wb is None
-        assert s.particles == []
+class TestIngestSlam:
+    def test_initializes_from_gaussian(self):
+        st = RBPFState(n_particles=16, rng=_rng(0))
+        assert not st.initialized
+        st.ingest_slam(PoseEstimate(T=_T(0.5, 0, 0),
+                                     cov=np.diag([1e-4]*6)))
+        assert st.initialized
+        assert len(st.particles) == 16
+        # Each particle should start near the mean
+        for p in st.particles:
+            assert np.linalg.norm(p.T_wb[:3, 3] - np.array([0.5, 0, 0])) < 0.05
+            assert p.log_weight == 0.0
+            assert p.objects == {}
 
-    def test_set_camera_extrinsic_updates_T_bc_and_Ad(self):
-        s = RBPFState(n_particles=2)
-        T_bc = _T(t=(0.15, 0.0, 1.1), rpy_deg=(0.0, 30.0, 0.0))
-        s.set_camera_extrinsic(T_bc)
-        np.testing.assert_allclose(s.T_bc, T_bc)
-        np.testing.assert_allclose(s._Ad_bc, se3_adjoint(T_bc))
+    def test_initializes_from_particles(self):
+        st = RBPFState(n_particles=8, rng=_rng(1))
+        Ts = np.stack([_T(x=0.1 * i) for i in range(8)], axis=0)
+        w = np.ones(8) / 8.0
+        st.ingest_slam(ParticlePose(particles=Ts, weights=w))
+        assert st.initialized
+        for k, p in enumerate(st.particles):
+            np.testing.assert_allclose(p.T_wb[:3, 3], [0.1 * k, 0, 0])
 
-    def test_set_camera_extrinsic_rejects_bad_shape(self):
-        s = RBPFState(n_particles=2)
-        with pytest.raises(ValueError):
-            s.set_camera_extrinsic(np.eye(3))
+    def test_subsequent_call_refreshes_Twb_keeps_objects(self):
+        st = RBPFState(n_particles=4, rng=_rng(2))
+        st.ingest_slam(PoseEstimate(T=_T(0, 0, 0), cov=np.diag([1e-6]*6)))
+        # Inject a fake object per particle
+        for p in st.particles:
+            p.objects[42] = ParticleObjectBelief(
+                mu=_T(1.0, 0, 0), cov=np.eye(6) * 0.01)
+            p.log_weight = 7.0
 
-
-# ─────────────────────────────────────────────────────────────────────
-# 2. SLAM ingest
-# ─────────────────────────────────────────────────────────────────────
-
-class TestSLAMIngest:
-    def test_first_ingest_populates_particles(self):
-        s = RBPFState(n_particles=5, rng=np.random.default_rng(0))
-        s.ingest_slam(PoseEstimate(T=_T(t=(1.0, 0., 0.)),
-                                     cov=np.diag([1e-6]*6)))
-        assert len(s.particles) == 5
-        for p in s.particles:
-            # Particles sampled near the supplied T_wb; prev_T_wb is None.
-            assert p.prev_T_wb is None
-
-    def test_second_ingest_caches_prev_per_particle(self):
-        s = _seed(n=4, T_wb=_T(t=(0.0, 0.0, 0.0)))
-        for p in s.particles:
-            assert p.prev_T_wb is None
-        s.ingest_slam(PoseEstimate(T=_T(t=(0.3, 0., 0.)),
-                                     cov=np.diag([1e-8]*6)))
-        for p in s.particles:
-            assert p.prev_T_wb is not None
-
-    def test_ingest_refreshes_collapsed_view(self):
-        # Gaussian SLAM sampling perturbs each particle's T_wb around
-        # the provided mean, so with N=4 and cov=1e-8 the collapsed
-        # mean has ~1e-4 sampling error. That's expected; use a
-        # tolerance comfortably above the noise.
-        s = _seed(n=4, T_wb=_T(t=(0.0, 0.0, 0.0)))
-        assert s.T_wb is not None
-        np.testing.assert_allclose(s.T_wb[:3, 3], (0.0, 0.0, 0.0), atol=1e-3)
-        s.ingest_slam(PoseEstimate(T=_T(t=(0.5, 0., 0.)),
-                                     cov=np.diag([1e-8]*6)))
-        np.testing.assert_allclose(s.T_wb[:3, 3], (0.5, 0.0, 0.0), atol=1e-3)
-        # `prev_T_wb` on the backend is the *previous collapsed mean*,
-        # which was approximately (0, 0, 0) at frame 1.
-        np.testing.assert_allclose(s.prev_T_wb[:3, 3], (0.0, 0.0, 0.0),
-                                     atol=1e-3)
+        st.ingest_slam(PoseEstimate(T=_T(2.0, 0, 0), cov=np.diag([1e-6]*6)))
+        # T_wb updated, objects and log_weight preserved
+        for p in st.particles:
+            assert np.linalg.norm(p.T_wb[:3, 3] - np.array([2.0, 0, 0])) < 0.01
+            assert 42 in p.objects
+            assert p.log_weight == 7.0
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. Object lifecycle (per-particle)
+# Ensure object & world-frame init
 # ─────────────────────────────────────────────────────────────────────
 
 class TestEnsureObject:
-    def test_ensure_lifts_mean_through_T_wb_T_bc_per_particle(self):
-        """μ^k_o = T_wb^k · T_bc · T_co_meas (the regression for the
-        long-standing implicit T_bc=I bug in RBPFState).
+    def test_per_particle_world_frame_init(self):
+        st = RBPFState(n_particles=4, rng=_rng(3))
+        # Make particles have different T_wb
+        st.particles = [
+            Particle(T_wb=_T(x=0.0), log_weight=0.0),
+            Particle(T_wb=_T(x=1.0), log_weight=0.0),
+            Particle(T_wb=_T(x=2.0), log_weight=0.0),
+            Particle(T_wb=_T(x=3.0), log_weight=0.0),
+        ]
+        added = st.ensure_object(
+            oid=5, T_co_meas=_T(x=0.5), init_cov=np.eye(6) * 0.01)
+        assert added
+        # Each particle's μ_wo = T_wb · T_co; so x varies from 0.5 to 3.5
+        xs = [p.objects[5].mu[0, 3] for p in st.particles]
+        assert xs == [0.5, 1.5, 2.5, 3.5]
 
-        The cov is stored verbatim (not Ad-lifted) -- same convention
-        as `GaussianState.ensure_object`.
-        """
-        T_wb = _T(t=(2.0, 0.0, 0.0))
-        T_bc = _T(t=(0.15, 0.0, 1.1), rpy_deg=(0.0, 30.0, 0.0))
-        s = _seed(n=3, T_wb=T_wb, T_bc=T_bc)
-        T_co = _T(t=(0.5, 0.0, 0.8))
-        R = np.diag([1e-3] * 6)
-
-        assert s.ensure_object(42, T_co, R) is True
-        for p in s.particles:
-            belief = p.objects[42]
-            expected = p.T_wb @ T_bc @ T_co
-            np.testing.assert_allclose(belief.mu, expected, atol=1e-10)
-            np.testing.assert_allclose(belief.cov, R, atol=1e-12)
-
-    def test_ensure_returns_false_when_oid_present_everywhere(self):
-        s = _seed(n=2)
-        T_co = _T(t=(0.5,)*3)
-        R = np.diag([1e-3] * 6)
-        s.ensure_object(1, T_co, R)
-        assert s.ensure_object(1, T_co, R) is False
+    def test_idempotent(self):
+        st = RBPFState(n_particles=2, rng=_rng(3))
+        st.particles = [
+            Particle(T_wb=_T(), log_weight=0.0),
+            Particle(T_wb=_T(), log_weight=0.0),
+        ]
+        assert st.ensure_object(9, _T(), np.eye(6))
+        # Second call: no-op (already exists)
+        assert not st.ensure_object(9, _T(x=99), np.eye(6))
+        # Original means retained (not overwritten by the second call)
+        for p in st.particles:
+            assert p.objects[9].mu[0, 3] == 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 4. Predict (world-frame storage -> identity-mean)
+# Predict
 # ─────────────────────────────────────────────────────────────────────
 
 class TestPredict:
-    def test_predict_static_all_preserves_mean_inflates_cov(self):
-        """World-frame storage: μ unchanged; cov += Q per particle."""
-        s = _seed(n=3)
-        s.ensure_object(1, _T(t=(0.5, 0., 0.5)), np.diag([1e-3]*6))
-        mus = [p.objects[1].mu.copy() for p in s.particles]
-        covs = [p.objects[1].cov.copy() for p in s.particles]
-        Q = np.diag([1e-5]*6)
-        s.predict_static_all(lambda oid: Q)
-        for p, mu0, cov0 in zip(s.particles, mus, covs):
-            np.testing.assert_allclose(p.objects[1].mu, mu0, atol=1e-12)
-            np.testing.assert_allclose(p.objects[1].cov, cov0 + Q,
-                                        atol=1e-12)
+    def test_predict_inflates_cov(self):
+        st = RBPFState(n_particles=3, rng=_rng(4))
+        st.particles = [
+            Particle(T_wb=_T(), log_weight=0.0) for _ in range(3)
+        ]
+        for p in st.particles:
+            p.objects[1] = ParticleObjectBelief(
+                mu=_T(), cov=np.eye(6) * 0.01)
+        Q = np.eye(6) * 0.001
+        st.predict_objects(lambda oid, p: Q)
+        for p in st.particles:
+            # Covariance grew by exactly Q
+            np.testing.assert_allclose(
+                p.objects[1].cov, np.eye(6) * 0.011)
 
-    def test_predict_static_all_skips_held_oids(self):
-        s = _seed(n=2)
-        s.ensure_object(1, _T(t=(0.5,)*3), np.diag([1e-3]*6))
-        s.ensure_object(2, _T(t=(0.6,)*3), np.diag([1e-3]*6))
-        covs_before = {oid: [p.objects[oid].cov.copy() for p in s.particles]
-                        for oid in (1, 2)}
-        Q = np.diag([1.0]*6)     # huge Q
-        s.predict_static_all(lambda oid: Q, skip_oids={1})
-        # oid=1 was skipped -> Q=0 -> cov unchanged.
-        for p, cov0 in zip(s.particles, covs_before[1]):
-            np.testing.assert_allclose(p.objects[1].cov, cov0, atol=1e-12)
-        # oid=2 was NOT skipped -> cov inflates.
-        for p, cov0 in zip(s.particles, covs_before[2]):
-            np.testing.assert_allclose(p.objects[2].cov, cov0 + Q,
-                                        atol=1e-12)
+    def test_rigid_attachment_moves_mean_and_inflates(self):
+        st = RBPFState(n_particles=2, rng=_rng(5))
+        st.particles = [
+            Particle(T_wb=_T(x=1.0), log_weight=0.0),
+            Particle(T_wb=_T(x=2.0), log_weight=0.0),
+        ]
+        for p in st.particles:
+            p.objects[7] = ParticleObjectBelief(
+                mu=p.T_wb @ _T(x=0.3),  # object 30cm in front of base
+                cov=np.eye(6) * 0.001)
+
+        # Translation-only ΔT in base frame: gripper moves +5cm in x
+        delta = _T(x=0.05)
+        Q_manip = np.eye(6) * 1e-6
+        st.rigid_attachment_predict(7, delta, Q_manip)
+
+        # In base frame the move is +5cm; world-frame T_wb · Δ · T_wb⁻¹ for
+        # pure translation just rotates the delta; with identity base rotation
+        # the world-frame delta is still +5cm in x. So each particle's
+        # object mean should move from (1.3, 2.3) to (1.35, 2.35).
+        np.testing.assert_allclose(st.particles[0].objects[7].mu[0, 3], 1.35)
+        np.testing.assert_allclose(st.particles[1].objects[7].mu[0, 3], 2.35)
+        # Covariance inflated
+        for p in st.particles:
+            assert np.trace(p.objects[7].cov) > np.trace(np.eye(6) * 0.001)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 5. Measurement update (per-particle Joseph + log-weight dual role)
+# Observation update / weighting (vision's dual role)
 # ─────────────────────────────────────────────────────────────────────
 
 class TestUpdateObservation:
-    def test_update_applies_per_particle(self):
-        s = _seed(n=3)
-        s.ensure_object(1, _T(t=(0.5, 0., 0.5)), np.diag([1e-3]*6))
-        mus0 = [p.objects[1].mu.copy() for p in s.particles]
-        # Perturb the measurement — each particle's posterior should
-        # shift toward it.
-        T_co_meas = _T(t=(0.55, 0.0, 0.5))
-        R = np.diag([1e-4]*6)
-        s.update_observation(1, T_co_meas, R, iekf_iters=2)
-        for p, mu0 in zip(s.particles, mus0):
-            assert not np.allclose(p.objects[1].mu, mu0, atol=1e-6), \
-                "posterior did not move; update had no effect"
-            assert _is_psd(p.objects[1].cov)
+    def test_covariance_shrinks_on_consistent_obs(self):
+        st = RBPFState(n_particles=1, rng=_rng(6))
+        st.particles = [Particle(T_wb=_T(), log_weight=0.0)]
+        st.particles[0].objects[0] = ParticleObjectBelief(
+            mu=_T(x=0.5), cov=np.diag([0.05]*6))
+        R = np.eye(6) * 1e-4
+        trace_before = np.trace(st.particles[0].objects[0].cov)
+        for _ in range(10):
+            st.update_observation(0, _T(x=0.5), R, iekf_iters=1)
+        trace_after = np.trace(st.particles[0].objects[0].cov)
+        assert trace_after < trace_before
 
-    def test_update_reweights_particles(self):
-        """Vision's dual role: same log-L that moves μ also adds to
-        particle.log_weight."""
-        s = _seed(n=3)
-        s.ensure_object(1, _T(t=(0.5, 0., 0.5)), np.diag([1e-3]*6))
-        lw0 = np.array([p.log_weight for p in s.particles])
-        s.update_observation(1, _T(t=(0.5, 0., 0.5)),
-                              np.diag([1e-4]*6), iekf_iters=1)
-        lw1 = np.array([p.log_weight for p in s.particles])
-        assert not np.allclose(lw0, lw1), \
-            "particle log_weights did not change after update"
+    def test_weight_higher_for_better_fit(self):
+        """Particle whose T_wb makes μ_wo closer to the observation gets a
+        higher per-frame log-likelihood."""
+        st = RBPFState(n_particles=2, rng=_rng(7))
+        # Particle A: T_wb at origin; object mu at (1,0,0).
+        # Particle B: T_wb at (0.5, 0, 0); object mu at (1,0,0) as well.
+        # Observation T_co = (1, 0, 0) — so μ_wo_meas_A = (1,0,0),
+        # μ_wo_meas_B = (1.5, 0, 0). A's belief matches, B's doesn't.
+        st.particles = [
+            Particle(T_wb=_T(), log_weight=0.0),
+            Particle(T_wb=_T(x=0.5), log_weight=0.0),
+        ]
+        for p in st.particles:
+            p.objects[0] = ParticleObjectBelief(
+                mu=_T(x=1.0), cov=np.diag([0.01]*6))
+        st.update_observation(0, _T(x=1.0), np.eye(6) * 1e-4, iekf_iters=1)
+        # A should have higher log-likelihood than B
+        assert st.particles[0].log_weight > st.particles[1].log_weight
 
-    def test_update_huber_zero_preserves_belief_mean(self):
-        """The shared `joseph_update` helper returns early on huber_w<=0,
-        so the belief mean and covariance are unchanged. (The particle
-        log-weight still absorbs the innovation likelihood; RBPF's
-        original contract and the orchestrator's convention is that
-        the caller doesn't invoke `update_observation` with huber_w=0
-        -- it routes to the miss branch instead -- but the early-return
-        in joseph_update keeps this path safe even if a caller slips up.)
+    def test_dual_role_means_reweighting_shifts_ess(self):
+        """When the object belief (μ_wo) is the SAME across particles but
+        T_wb^k differs, the per-particle innovation differs — particles
+        whose base pose is consistent with the observation get higher
+        weight. ESS should drop.
         """
-        s = _seed(n=2)
-        s.ensure_object(1, _T(t=(0.5, 0., 0.5)), np.diag([1e-3]*6))
-        mus = [p.objects[1].mu.copy() for p in s.particles]
-        covs = [p.objects[1].cov.copy() for p in s.particles]
-        s.update_observation(1, _T(t=(0.6, 0., 0.5)),
-                              np.diag([1e-4]*6), huber_w=0.0)
-        for p, mu0, cov0 in zip(s.particles, mus, covs):
-            np.testing.assert_allclose(p.objects[1].mu, mu0)
-            np.testing.assert_allclose(p.objects[1].cov, cov0)
+        st = RBPFState(n_particles=64, rng=_rng(8))
+        st.ingest_slam(PoseEstimate(T=_T(), cov=np.diag([1e-2]*6)))
+        # Seed a SHARED world-frame belief (as if from a landmark map).
+        # Particles with T_wb close to origin will be consistent; those
+        # further will not — vision differentiates them.
+        for p in st.particles:
+            p.objects[0] = ParticleObjectBelief(
+                mu=_T(x=1.0), cov=np.diag([0.01]*6))
+        ess0 = st.ess()
+        for _ in range(5):
+            st.update_observation(0, _T(x=1.0), np.eye(6) * 1e-4, iekf_iters=1)
+        ess1 = st.ess()
+        assert ess1 < ess0
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 6. Collapsed views (BasePoseBackend)
+# Resampling
 # ─────────────────────────────────────────────────────────────────────
 
-class TestCollapsedViews:
-    def test_camera_frame_prior_is_identity_when_T_wb_T_bc_identity(self):
-        """With T_wb = I, T_bc = I: T_co_prior == collapsed μ_wo."""
-        s = _seed(n=3, T_wb=_T(), T_bc=_T())
-        T_co = _T(t=(0.5, 0.1, 0.8))
-        s.ensure_object(42, T_co, np.diag([1e-3]*6))
-        prior = s.camera_frame_prior(42)
-        assert prior is not None
-        # collapsed μ_wo should be close to T_co (μ^k_o = T_wb^k · I · T_co,
-        # particles are near T_wb = I).
-        np.testing.assert_allclose(prior[:3, 3], T_co[:3, 3], atol=1e-3)
+class TestResampling:
+    def test_no_resample_when_ess_high(self):
+        st = RBPFState(n_particles=16, rng=_rng(9))
+        st.ingest_slam(PoseEstimate(T=_T(), cov=np.diag([1e-4]*6)))
+        # All weights equal → ESS = N → no resample
+        assert not st.resample_if_needed(threshold_frac=0.5)
 
-    def test_camera_frame_prior_inverts_lift(self):
-        """T_co^pred = (T_wb · T_bc)^{-1} · μ_wo — round-trip from ensure."""
-        T_wb = _T(t=(1.0, 0.0, 0.0))
-        T_bc = _T(t=(0.15, 0.0, 1.1))
-        s = _seed(n=1, T_wb=T_wb, T_bc=T_bc)         # N=1 so collapsed == particle
-        T_co_true = _T(t=(0.5, 0.0, 0.8))
-        s.ensure_object(42, T_co_true, np.diag([1e-3]*6))
-        prior = s.camera_frame_prior(42)
-        np.testing.assert_allclose(prior, T_co_true, atol=1e-9)
+    def test_resamples_when_ess_low(self):
+        st = RBPFState(n_particles=16, rng=_rng(10))
+        st.ingest_slam(PoseEstimate(T=_T(), cov=np.diag([1e-4]*6)))
+        # Make one particle dominate
+        for k, p in enumerate(st.particles):
+            p.log_weight = 100.0 if k == 0 else 0.0
+        assert st.ess() < 2.0
+        did = st.resample_if_needed(threshold_frac=0.5)
+        assert did
+        # All particles should now be (near) copies of the dominant slot.
+        t0 = st.particles[0].T_wb
+        for p in st.particles:
+            # Same underlying T_wb value; copies are independent arrays
+            assert np.allclose(p.T_wb, t0)
+            assert p.log_weight == 0.0
 
-    def test_known_oids_is_union_across_particles(self):
-        s = _seed(n=3)
-        s.ensure_object(1, _T(t=(0.5,)*3), np.diag([1e-3]*6))
-        s.ensure_object(7, _T(t=(0.6,)*3), np.diag([1e-3]*6))
-        assert set(s.known_oids()) == {1, 7}
+    def test_resample_deep_copies_objects(self):
+        st = RBPFState(n_particles=4, rng=_rng(11))
+        st.ingest_slam(PoseEstimate(T=_T(), cov=np.diag([1e-6]*6)))
+        for p in st.particles:
+            p.objects[3] = ParticleObjectBelief(
+                mu=_T(x=0.7), cov=np.eye(6) * 0.001)
+        # Force dominance
+        st.particles[0].log_weight = 50.0
+        st.resample_if_needed(threshold_frac=0.99)
+        # Mutating one particle's belief should not affect the others
+        st.particles[0].objects[3].mu[0, 3] = 999.0
+        for p in st.particles[1:]:
+            assert p.objects[3].mu[0, 3] != 999.0
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 7. Merge (per-particle info fusion)
+# Collapsed summaries
 # ─────────────────────────────────────────────────────────────────────
 
-class TestMergeTracks:
-    def test_merge_deletes_drop_everywhere(self):
-        s = _seed(n=2)
-        s.ensure_object(1, _T(t=(0.5,)*3), np.diag([1e-3]*6))
-        s.ensure_object(2, _T(t=(0.51, 0.0, 0.5)), np.diag([1e-3]*6))
-        assert s.merge_tracks(1, 2) is True
-        for p in s.particles:
-            assert 1 in p.objects and 2 not in p.objects
+class TestCollapse:
+    def test_collapsed_base_agrees_with_particle_spread(self):
+        st = RBPFState(n_particles=100, rng=_rng(12))
+        st.ingest_slam(PoseEstimate(T=_T(x=0.3), cov=np.diag([1e-2]*6)))
+        pe = st.collapsed_base()
+        np.testing.assert_allclose(pe.T[:3, 3], [0.3, 0, 0], atol=0.03)
+        assert np.trace(pe.cov) > 0
 
-    def test_merge_returns_false_when_keep_equals_drop(self):
-        s = _seed(n=2)
-        s.ensure_object(1, _T(), np.diag([1e-3]*6))
-        assert s.merge_tracks(1, 1) is False
+    def test_collapsed_object_mixture(self):
+        """When particles disagree on T_wb, the collapsed object covariance
+        reflects both the per-particle EKF cov and the spread across
+        particles."""
+        st = RBPFState(n_particles=16, rng=_rng(13))
+        st.particles = [
+            Particle(T_wb=_T(x=0.1 * k), log_weight=0.0)
+            for k in range(16)
+        ]
+        for p in st.particles:
+            p.objects[0] = ParticleObjectBelief(
+                mu=p.T_wb @ _T(x=0.5),
+                cov=np.diag([1e-4]*6),
+            )
+        pe = st.collapsed_object(0)
+        assert pe is not None
+        # Mean should be around x = 0.5 + mean(0 to 1.5) = 0.5 + 0.75 = 1.25
+        assert 1.0 < pe.T[0, 3] < 1.5
+        # Translational x-variance should reflect the spread (≈ var(0..1.5) ≈ 0.21),
+        # much larger than per-particle cov (1e-4).
+        assert pe.cov[0, 0] > 0.05
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Slow-tier reconcile hook
+# ─────────────────────────────────────────────────────────────────────
+
+class TestInjectPosterior:
+    def test_overwrites_all_particles(self):
+        st = RBPFState(n_particles=3, rng=_rng(14))
+        st.particles = [
+            Particle(T_wb=_T(), log_weight=0.0) for _ in range(3)
+        ]
+        for k, p in enumerate(st.particles):
+            p.objects[0] = ParticleObjectBelief(
+                mu=_T(x=float(k)), cov=np.eye(6) * 0.1)
+        target = PoseEstimate(T=_T(x=42.0), cov=np.eye(6) * 1e-6)
+        st.inject_posterior(0, target)
+        for p in st.particles:
+            np.testing.assert_allclose(p.objects[0].mu[0, 3], 42.0)
+            np.testing.assert_allclose(p.objects[0].cov, target.cov)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.perception.visibility import visibility_p_v, _fibonacci_sphere
+from perception.visibility import visibility_p_v, _fibonacci_sphere
 
 
 # Fetch-like intrinsics (640 x 480 head camera).

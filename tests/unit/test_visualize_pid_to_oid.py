@@ -1,4 +1,4 @@
-"""Unit tests for ``tests.visualize_ekf_tracking._build_pid_to_oid``.
+"""Unit tests for ``scripts.visualize_ekf_tracking._build_pid_to_oid``.
 
 Pin: ``match`` values in the ekf state JSON are GLOBAL indices into
 ``dets_with_pose`` (the producer remaps Hungarian's local column
@@ -23,7 +23,7 @@ def _load_driver():
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if repo not in sys.path:
         sys.path.insert(0, repo)
-    path = os.path.join(repo, "tests", "visualize_ekf_tracking.py")
+    path = os.path.join(repo, "scripts", "visualize_ekf_tracking.py")
     spec = importlib.util.spec_from_file_location(
         "visualize_ekf_tracking_for_test", path)
     mod = importlib.util.module_from_spec(spec)

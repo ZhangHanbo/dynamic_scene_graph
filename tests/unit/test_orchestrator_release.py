@@ -16,7 +16,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.orchestrator import TwoTierOrchestrator
+# `should_apply_rigid` was lifted to GaussianEkfTracker as part of the
+# orchestrator removal; alias the symbol locally to keep the test body
+# unchanged.
+from ekf_tracker.gaussian_ekf_tracker import GaussianEkfTracker as TwoTierOrchestrator
 
 
 def _eye4():

@@ -1,4 +1,4 @@
-"""Unit tests for ``pose_update.manipulation.grasp_owner_detector.GraspOwnerDetector``.
+"""Unit tests for ``ekf_tracker.manipulation.grasp_owner_detector.GraspOwnerDetector``.
 
 Pins:
 - Fix 1: Tier 2 (geometric containment) is invariant under T_wb
@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.manipulation.grasp_owner_detector import (
+from ekf_tracker.manipulation.grasp_owner_detector import (
     GraspOwnerDetector, HeldDecision, TrackerState,
 )
 
@@ -155,7 +155,7 @@ def test_tier2_invariant_under_T_wb():
     # Build a real GripperGeometry — use Fetch since it ships with
     # the repo and the URDF lookup is deterministic.
     try:
-        from pose_update.robot_models import create_gripper_geometry
+        from utils.robot_models import create_gripper_geometry
     except Exception:
         pytest.skip("Fetch gripper geometry not available")
     gripper = create_gripper_geometry("fetch")

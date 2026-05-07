@@ -273,8 +273,13 @@ def fresh_dump_dir():
 def _fixture_frame_ids() -> List[str]:
     """Filename stems under FIXTURE_DIR (sorted)."""
     if not FIXTURE_DIR.exists():
-        pytest.skip(f"no baseline fixture at {FIXTURE_DIR}; "
-                     f"run _regenerate_fixture.py first")
+        # Called at module collection time by `parametrize` — must allow
+        # module-level skip so pytest doesn't error the entire collection.
+        pytest.skip(
+            f"no baseline fixture at {FIXTURE_DIR}; "
+            f"run _regenerate_fixture.py first",
+            allow_module_level=True,
+        )
     files = sorted(FIXTURE_DIR.glob("frame_*.json"))
     return [f.stem for f in files]
 

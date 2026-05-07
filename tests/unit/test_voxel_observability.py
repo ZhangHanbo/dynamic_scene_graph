@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pose_update.perception.voxel_observability import (
+from perception.voxel_observability import (
     EMPTY,
     OCCUPIED,
     UNSEEN,

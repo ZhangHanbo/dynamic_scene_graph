@@ -13,24 +13,23 @@ import pytest
 
 # We test the helper directly without instantiating the full orchestrator
 # (which has heavy dependencies). The merge-pass logic is structurally
-# the same as what's deployed in ``InstrumentedTracker._self_merge_pass``,
+# the same as what's deployed in ``GaussianEkfTracker._self_merge_pass``,
 # so we exercise it via that path.
 
 
 def _build_tracker_with_two_close_apples():
-    """Build a minimal InstrumentedTracker with two same-label tracks
+    """Build a minimal GaussianEkfTracker with two same-label tracks
     4.5 cm apart in base frame (just under the 5 cm self-merge gate)."""
     import sys
     from importlib import import_module
-    sys.path.insert(0, "tests")
-    viz = import_module("visualize_ekf_tracking")
+    viz = import_module("scripts.visualize_ekf_tracking")
 
     cfg = viz.BernoulliConfig()
-    tracker = viz.InstrumentedTracker(
+    tracker = viz.GaussianEkfTracker(
         K=viz.K_DEFAULT, bernoulli_cfg=cfg,
         T_bc=np.eye(4))
     # Seed two apple tracks at known base positions.
-    from pose_update.state.gaussian_state import GaussianObjectBelief
+    from ekf_tracker.state.gaussian_state import GaussianObjectBelief
     P = np.eye(6) * 1e-4
     T1 = np.eye(4); T1[:3, 3] = [0.50, 0.00, 0.00]
     T2 = np.eye(4); T2[:3, 3] = [0.545, 0.00, 0.00]   # 4.5 cm apart

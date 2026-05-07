@@ -44,7 +44,12 @@ DATA_ROOT = os.path.join(
     os.path.dirname(SCENEREP_ROOT),
     "Mobile_Manipulation_on_Fetch", "multi_objects", "apple_bowl_2"
 )
-HAS_DATA = os.path.isdir(os.path.join(DATA_ROOT, "rgb"))
+# Require both the rgb dir AND the first cached detection JSON so partial
+# layouts (rgb present but detection_h empty) skip cleanly instead of
+# erroring out the fixture mid-load.
+HAS_DATA = (os.path.isdir(os.path.join(DATA_ROOT, "rgb")) and
+            os.path.exists(os.path.join(
+                DATA_ROOT, "detection_h", "detection_000000_final.json")))
 
 requires_data = pytest.mark.skipif(
     not HAS_DATA,
@@ -357,7 +362,7 @@ class TestObjectTracker:
 class TestPoseUpdater:
     def test_update_from_ee_basic(self):
         """Test EE pose update with a synthetic SceneObject."""
-        from scene.scene_object import SceneObject
+        from heuristic_tracker.scene_object import SceneObject
 
         pose = np.eye(4, dtype=np.float32)
         pose[:3, 3] = [1.0, 2.0, 0.5]
@@ -374,7 +379,7 @@ class TestPoseUpdater:
     @requires_data
     def test_update_from_ee_with_real_poses(self, real_frame_0):
         """Test EE pose update using real camera/EE poses."""
-        from scene.scene_object import SceneObject
+        from heuristic_tracker.scene_object import SceneObject
 
         rgb, depth, T_cw, detections = real_frame_0
         ee_poses = load_pose_txt(os.path.join(DATA_ROOT, "pose_txt", "ee_pose.txt"))
@@ -400,7 +405,7 @@ class TestRelationAnalyzer:
 
     def test_synthetic_stacked_objects(self):
         """Two objects stacked vertically should have on/under relation."""
-        from scene.scene_object import SceneObject
+        from heuristic_tracker.scene_object import SceneObject
 
         # Bottom object
         pose_bottom = np.eye(4, dtype=np.float32)
