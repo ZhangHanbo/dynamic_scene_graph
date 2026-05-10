@@ -1,96 +1,130 @@
 # Dynamic Scene Graph
 
-Object-centric, dynamic 3D scene-graph representation for robotic
-manipulation. Given a stream of RGB-D frames, SLAM poses, and gripper
-proprioception, the package tracks every object's world-frame pose,
-geometry, existence, and pairwise spatial relations across grasp / lift /
-drop interactions.
+Object-centric, dynamic 3D scene-graph tracker for robotic manipulation.
+RGB-D + SLAM + gripper proprioception → per-object pose, covariance,
+Bernoulli existence, and `on / in / under / contain` relations across
+grasp / lift / drop interactions.
 
-Three trackers ship in the box:
+📄 **Algorithm derivation:** [bernoulli_ekf.pdf](ekf_tracker/latex/bernoulli_ekf.pdf)
+— Bernoulli-EKF on SE(3), two-tier orchestration, factor graph, adaptive
+robust kernel. Part III maps every component to the file that
+implements it.
 
-| Package | Style | Use it when |
-|---|---|---|
-| [`heuristic_tracker`](heuristic_tracker/index.md) | TSDF + Hungarian + ICP, deterministic | Production / `robi_butler` integration, fast deterministic poses with mesh output |
-| [`ekf_tracker`](ekf_tracker/index.md) | Bernoulli-EKF on SE(3) with optional pose-graph smoothing | Research, occlusion-heavy scenes, anywhere uncertainty matters |
-| [`baselines`](baselines/index.md) | Visual-only ICP, no filter | Ablation / reference baseline only |
+This site is **file-by-file**: every page documents exactly one source
+file, in `ekf_tracker/` or `scripts/`.
 
-```{admonition} New here?
-:class: tip
+## Installation
 
-Start with [Quickstart](getting_started/quickstart.md) — five lines that turn
-a cached trajectory into world-frame object poses. Then read
-[Choosing a tracker](getting_started/choosing_a_tracker.md) and
-[Architecture overview](architecture/overview.md) before integrating.
+```bash
+git clone git@github.com:ZhangHanbo/dynamic_scene_graph.git
+cd dynamic_scene_graph
+
+conda create -n dynamic_scene_graph python=3.11
+conda activate dynamic_scene_graph
+pip install -r requirements.txt
+pip install -e .
 ```
 
-```{toctree}
-:caption: Getting started
-:maxdepth: 2
+## Quickstart — bundled demo trajectory
 
-getting_started/installation
-getting_started/quickstart
-getting_started/choosing_a_tracker
+A 37-frame Fetch slice is shipped at `demo/apple_in_the_tray.zip`.
+The runner extracts it on first call, then drives the EKF tracker:
+
+```bash
+python demo/run_demo.py
 ```
 
-```{toctree}
-:caption: Workflows
-:maxdepth: 2
+Expected output — one line per frame listing each tracked object's
+world-frame position and Bernoulli existence:
 
-workflows/rosbag_to_dataset
-workflows/offline_pipeline
-workflows/realtime_ros
-workflows/live_detection
-workflows/evaluation
-workflows/debugging_visualizers
+```
+frame 0488  objects: 0:apple@[-0.12, 0.41, 0.78] r=0.97, 1:tray@[-0.05, 0.39, 0.74] r=0.99
+…
+done.
 ```
 
-```{toctree}
-:caption: Architecture
-:maxdepth: 2
+For the rendered debug video (covariance ellipses, top-down state,
+event log) run the canonical visualizer instead:
 
-architecture/overview
-architecture/frame_conventions
-architecture/data_flow
+```bash
+python scripts/visualize_ekf_tracking.py \
+    --trajectory apple_in_the_tray \
+    --config-path configs/ekf_tracker/customization.yaml
 ```
 
-```{toctree}
-:caption: Trackers
-:maxdepth: 2
+→ outputs `tests/visualization_pipeline/apple_in_the_tray/ekf_debug.mp4`.
+See [`scripts/visualize_ekf_tracking.py`](scripts/visualize_ekf_tracking.md)
+for every flag.
 
-ekf_tracker/index
-heuristic_tracker/index
-baselines/index
-```
+## File-by-file reference
 
 ```{toctree}
-:caption: Perception layer
-:maxdepth: 2
-
-perception/index
-perception/detection_pipeline
-perception/api_reference
-```
-
-```{toctree}
-:caption: Reference
-:maxdepth: 2
-
-reference/configs
-reference/utils
-reference/examples
-reference/glossary
-```
-
-```{toctree}
-:caption: Background
+:caption: ekf_tracker/
 :maxdepth: 1
 
-background/survey_and_analysis
-background/khronos_lessons
+ekf_tracker/__init__
+ekf_tracker/api
+ekf_tracker/gaussian_ekf_tracker
+ekf_tracker/orchestrator_gaussian
+ekf_tracker/factor_graph
+ekf_tracker/perception_pipeline
+ekf_tracker/birth_gate
+ekf_tracker/config
 ```
 
-## Indices
+```{toctree}
+:caption: ekf_tracker/configs/
+:maxdepth: 1
 
-* {ref}`genindex`
-* {ref}`modindex`
-* {ref}`search`
+ekf_tracker/configs/__init__
+ekf_tracker/configs/default_yaml
+```
+
+```{toctree}
+:caption: ekf_tracker/state/
+:maxdepth: 1
+
+ekf_tracker/state/__init__
+ekf_tracker/state/gaussian_state
+ekf_tracker/state/rbpf_state
+ekf_tracker/state/obs_chain
+ekf_tracker/state/bernoulli
+```
+
+```{toctree}
+:caption: ekf_tracker/manipulation/
+:maxdepth: 1
+
+ekf_tracker/manipulation/__init__
+ekf_tracker/manipulation/grasp_owner_detector
+ekf_tracker/manipulation/gripper_state_inferrer
+ekf_tracker/manipulation/gravity_predict
+```
+
+```{toctree}
+:caption: ekf_tracker/relations/
+:maxdepth: 1
+
+ekf_tracker/relations/__init__
+ekf_tracker/relations/relation_orchestrator
+ekf_tracker/relations/relation_filter
+ekf_tracker/relations/relation_client
+ekf_tracker/relations/relation_utils
+```
+
+```{toctree}
+:caption: scripts/
+:maxdepth: 1
+
+scripts/visualize_ekf_tracking
+scripts/visualize_voxel_obs
+scripts/render_gripper_overlay
+scripts/visualize_arm_mask
+```
+
+## Build this site
+
+```bash
+pip install -r requirements-docs.txt
+cd docs && make html
+```
