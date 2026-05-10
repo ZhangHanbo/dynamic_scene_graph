@@ -1,27 +1,4 @@
-"""
-Joint pose graph over movable objects (Task 4 + 6b).
-
-Variables:
-  * One `gtsam.Pose3` per movable object in the active set.
-  * The camera pose `T_wb` is a FIXED parameter, not a variable, per
-    the strict layer hierarchy decided in DISCUSSION.md.
-
-Factors:
-  * PriorPose3 from each object's EKF posterior (mean + covariance).
-  * BetweenFactorPose3 for each camera→object observation (ICP result),
-    with noise composed as R_ICP + J·Σ_wb·J^T (Paper 1 forwarding).
-  * Custom relation factors for scene graph edges (on / in), noise
-    modulated by relation detection score and pose uncertainties.
-  * BetweenFactorPose3 for the manipulation constraint during HOLDING
-    (rigid attachment to the EE, with base-localization-magnitude noise
-    per the shared-error analysis in DISCUSSION.md).
-  * All factors wrapped in a robust noise model using the Barron loss
-    from adaptive_kernel.py (Task 5) to auto-downweight outliers.
-
-The optimization uses Levenberg-Marquardt; GNC (graduated non-convexity)
-is applied externally via the adaptive kernel's alternating-minimization
-on α (residuals → α → IRLS weights via robust noise scaling).
-"""
+""":class:`PoseGraphOptimizer` — joint GTSAM pose graph over movable objects with EKF priors, ICP betweens, relation factors, and adaptive robust loss."""
 
 from __future__ import annotations
 
@@ -84,11 +61,7 @@ def _gtsam_noise_from_cov(cov: np.ndarray) -> gtsam.noiseModel.Base:
 
 def _scale_noise_by_weight(cov: np.ndarray, weight: float,
                             min_weight: float = 1e-6) -> np.ndarray:
-    """Inflate covariance inversely with IRLS weight.
-
-    A weight of 1 leaves cov unchanged; a weight near 0 inflates cov
-    toward infinity, effectively removing the factor.
-    """
+    r"""Scale a noise model's standard deviations by :math:`1/\sqrt{w}` for IRLS."""
     w = max(weight, min_weight)
     return cov / w
 
@@ -107,18 +80,7 @@ def relation_residual(T_parent: np.ndarray, T_child: np.ndarray,
                       relation_type: str,
                       parent_size: Optional[np.ndarray] = None,
                       child_size: Optional[np.ndarray] = None) -> float:
-    """Scalar residual for a scene graph relation.
-
-    Zero when the relation is perfectly satisfied; positive and growing
-    as the configuration drifts away from the relation's physical
-    constraint.
-
-    * 'on':  child's bottom should rest on parent's top.
-            residual = max(0, (child_bottom_z - parent_top_z))
-            (only penalizes child floating *above* parent)
-    * 'in':  child's center should be inside parent's bounding volume.
-            residual = sum of per-axis excess distance outside parent's bbox.
-    """
+    r"""Residual for an :math:`\text{on}` / :math:`\text{in}` relation factor (relative-pose constraint between parent and child)."""
     parent_pos = T_parent[:3, 3]
     child_pos = T_child[:3, 3]
 
@@ -145,14 +107,7 @@ def _between_t(T_child_in_parent: np.ndarray,
                 relation_type: str,
                 parent_size: np.ndarray,
                 child_size: np.ndarray) -> np.ndarray:
-    """Expected relative translation (child - parent) for a satisfied relation.
-
-    Used to build a BetweenFactorPose3 that encodes the relation.
-    We approximate 'on' as a purely vertical offset, and 'in' as zero
-    relative translation (child centered in parent) — these are soft
-    approximations acceptable because the scene graph relation is a
-    weak constraint modulated by confidence.
-    """
+    """SE(3) between-factor whose error penalises only the translation block."""
     if relation_type == "on":
         expected = np.zeros(3)
         expected[2] = 0.5 * (parent_size[2] + child_size[2])
@@ -166,22 +121,7 @@ def _between_t(T_child_in_parent: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────
 
 class PoseGraphOptimizer:
-    """Joint pose graph optimizer for movable objects.
-
-    See docstring at the top of this file for the factor catalogue.
-
-    Typical usage:
-        opt = PoseGraphOptimizer(adaptive_c=0.01)
-        result = opt.run(slam_pose=T_wb_est,
-                         priors={oid: PoseEstimate(T, cov) for oid in active},
-                         observations=[Observation(...)],
-                         relations=[RelationEdge(...)],
-                         T_ew=ee_pose_world, T_oe=held_offset,
-                         held_obj_id=3)
-        # Absorb back into EKFs:
-        for oid, pe in result.posteriors.items():
-            ekfs[oid].set_posterior(pe)
-    """
+    """GTSAM pose graph over movable objects: EKF priors, ICP betweens, relation factors, adaptive robust loss."""
 
     def __init__(self,
                  adaptive_c: float = 0.01,
@@ -207,21 +147,7 @@ class PoseGraphOptimizer:
             T_oe: Optional[np.ndarray] = None,
             active_set: Optional[Set[int]] = None,
             ) -> OptimizationResult:
-        """Build and solve the joint pose graph.
-
-        Args:
-            slam_pose: Fixed camera-to-world `T_wb` and its covariance `Σ_wb`.
-            priors: EKF posterior per object (restricted to active set if given).
-            observations: Camera→object ICP measurements for the current frame
-                          (and possibly accumulated since last run).
-            relations: Scene graph edges with soft scores.
-            held_obj_id / T_ew / T_oe: manipulation factor inputs; if held_obj_id
-                is None the manipulation factor is omitted.
-            active_set: object IDs to optimize. If None, uses priors.keys().
-
-        Returns:
-            OptimizationResult with updated PoseEstimates for the active set.
-        """
+        """Build and optimize the graph; returns updated :math:`(T_{wo}, P_{wo})` per object."""
         if active_set is None:
             active_set = set(priors.keys())
         # Add any observation or relation target into the active set
@@ -377,11 +303,7 @@ class PoseGraphOptimizer:
                              priors: Dict[int, PoseEstimate],
                              rel: RelationEdge,
                              alpha: float) -> None:
-        """Encode relation as a BetweenFactor on translation only (rotation free).
-
-        Uses a diagonal noise model that is looser in rotation than translation
-        because scene graph relations primarily constrain position.
-        """
+        """Add a single relation factor (``on`` / ``in``) wrapping the residual in the adaptive Barron kernel."""
         parent_key = key_by_id[rel.parent]
         child_key = key_by_id[rel.child]
 

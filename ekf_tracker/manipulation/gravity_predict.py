@@ -1,45 +1,4 @@
-"""Gravity-aware one-shot predict for the EKF on object release.
-
-Called once when the gripper releases an object: simulates the
-free-fall + bounce + roll dispersion using a parametric model and the
-voxel observability grid (`perception.voxel_observability`) to find
-the supporting surface below the object.
-
-The output is an updated SE(3) mean and 6×6 covariance (in `[v, ω]`
-tangent ordering matching `pose_update/ekf_se3.py`). Subsequent frames
-revert to the standard static-predict — this function is invoked at
-the release-transition edge only.
-
-Parametric model (full derivation in
-`docs/ekf_tracker/latex/bernoulli_ekf.tex`, "Gravity-aware predict at release"):
-
-    σ_xy² = σ_bounce² + σ_release_v² + σ_shape²
-        σ_bounce    = ε_roughness · sqrt(2 g h) / max(0.1, 1 - e)
-        σ_release_v = 0.5 · ‖v_xy‖ · t_fall
-        σ_shape     = r_obj · shape_footprint_factor(shape)
-    σ_z       = 0.5 · r_obj · (1 - e/2)              (clean surface)
-    σ_yaw     = π · (1 - exp(-h · (1 - e²) / r_obj))
-    σ_roll    = σ_pitch = arctan(r_obj / max(h_stable, 0.01))
-
-Voxel-driven adjustment to (h, σ_z), in priority order:
-
-    release_visible:    the release pose itself projects to a valid depth
-                        pixel and the depth matches the release-pose z_cam
-                        within `tol_release_visible_m`. The apple is still
-                        in view; perception will handle it on the next
-                        frame. We return identity (no covariance inflation).
-    landing_visible:    the gravity-predicted landing XY projects to a
-                        valid depth pixel. We snap landing_z to the world-z
-                        of the visible surface and tighten σ_z to a few cm.
-    neighbourhood_median: column under the predicted XY is `all_unseen`,
-                        but ≥ `min_neighbour_surfaces_for_median` columns
-                        within `r_neighbourhood_m` have a known surface_z.
-                        We use the median surface_z + a spread-driven σ_z.
-    hit_occupied:       column hit a surface cleanly.
-    mixed_unseen:       column hit a surface, but with unseen voxels above.
-    all_unseen:         column never observed (fallback to midpoint).
-    all_empty:          column observed empty all the way down.
-"""
+"""Parametric free-fall + bounce + roll prior on release; updates pose mean and covariance via the voxel observability grid."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -62,11 +21,7 @@ EPS_ROUGHNESS_DEFAULT = 5.0e-3
 
 @dataclass
 class GravityPredictInfo:
-    """Diagnostic record returned by `predict_landing_pose`.
-
-    Surfaced via the orchestrator's gravity-predict log so visualizers
-    and integration tests can inspect the parametric components.
-    """
+    """Result of :func:`predict_landing_pose`: predicted :math:`T_{wo}`, covariance :math:`P_{wo}`, and chosen support voxel."""
     column_state: str
     drop_height_m: float
     surface_z: Optional[float]
@@ -130,17 +85,7 @@ def _surface_world_at_xyz(p_world: np.ndarray,
                             min_d: float,
                             max_d: float
                             ) -> Optional[Tuple[np.ndarray, float, float]]:
-    """Project world-frame point ``p_world`` into the camera and look up the
-    visible surface at that pixel.
-
-    Returns ``(p_surface_world, depth_value, p_query_z_cam)`` if the
-    projection is in-bounds with valid depth, else ``None``.
-
-    ``p_surface_world`` is the world-frame position of whatever surface the
-    pixel ray hits (back-projected from the depth sample). ``p_query_z_cam``
-    is the camera-frame z of the *query* point (so the caller can decide
-    whether the depth matches the query, e.g. for release-pose visibility).
-    """
+    """Find the topmost OCCUPIED voxel below ``(x, y)`` in the world frame, returning its z, or ``None``."""
     H, W = image_shape
     p_h = np.asarray([p_world[0], p_world[1], p_world[2], 1.0],
                       dtype=np.float64)
@@ -178,14 +123,7 @@ def _neighbourhood_surfaces(
     max_distance_m: float,
     floor_z: float,
 ) -> Tuple[int, Optional[float], float]:
-    """Raycast down from N points on a circle around ``centre_xy``.
-
-    Returns ``(n_with_surface, median_surface_z, surface_spread_m)``. If
-    no neighbour found a surface, returns ``(0, None, 0.0)``.
-
-    ``surface_spread_m`` is half the IQR of the surface_z values (quick
-    approximation of one σ for the column z-uncertainty).
-    """
+    """Sample candidate landing positions within a horizontal disk around the release point."""
     if n_samples <= 0 or radius_m <= 0.0:
         return 0, None, 0.0
     surfs = []
@@ -243,49 +181,7 @@ def predict_landing_pose(
     max_depth_m: float = 5.0,
     tol_release_visible_m: float = 0.05,
 ) -> Tuple[np.ndarray, np.ndarray, GravityPredictInfo]:
-    """One-shot release-time predict: returns settled pose + covariance.
-
-    Args:
-        T_release: (4, 4) world-frame pose at release (the object is
-            still at the gripper, falling has not started yet).
-        P_release: (6, 6) covariance at release in `[v, ω]` tangent
-            ordering (translation first then rotation).
-        voxel_obs: scene voxel-observability grid. None → skip and
-            return identity update (caller falls back to standard
-            static predict).
-        dyn: dynamics property (resolved via
-            `utils.object_dynamics.lookup_dynamics(label)`).
-        gravity: gravitational acceleration (m/s²).
-        workspace_floor_z: world-frame z below which the column is
-            assumed to be void.
-        eps_roughness: surface-roughness coefficient in the bounce
-            model (m / (m·s⁻¹)).
-        max_drop_m: maximum drop distance to consider for the raycast.
-        v_release_world: (3,) world-frame velocity at release; defaults
-            to zero. Only the horizontal component is used.
-        live_object_voxels: iterable of (x, y, z, radius) for other
-            tracked objects to overlay as OCCUPIED for this query.
-
-        # ─── Fix A: neighbourhood-median fallback for all_unseen ───
-        r_neighbourhood_m: XY radius for neighbouring columns.
-        n_neighbourhood_samples: number of evenly-spaced angular samples.
-        min_neighbour_surfaces_for_median: minimum hit-count to trust
-            the median (else fall through to original midpoint logic).
-
-        # ─── Fix B: visibility-based override ───
-        K, depth, T_cw, image_shape: per-frame camera intrinsics + depth
-            map + camera-to-world extrinsic + (H, W). All four are
-            required to enable the override; if any is None, Fix B is
-            skipped (Fix A still applies).
-        min_depth_m, max_depth_m: range for "valid" depth pixel.
-        tol_release_visible_m: depth-vs-release-z_cam tolerance for
-            declaring the release pose still in view.
-
-    Returns:
-        T_land: (4, 4) predicted post-settling pose.
-        P_land: (6, 6) inflated covariance.
-        info: `GravityPredictInfo` with diagnostics.
-    """
+    """Parametric free-fall + bounce + roll prior: predict :math:`T_{wo}` and :math:`P_{wo}` at the moment a held object is released."""
     T_release = np.asarray(T_release, dtype=np.float64)
     P_release = np.asarray(P_release, dtype=np.float64)
     if T_release.shape != (4, 4) or P_release.shape != (6, 6):

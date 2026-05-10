@@ -1,53 +1,4 @@
-"""Config loader for the EKF tracker.
-
-Loads ``ekf_tracker/configs/default.yaml`` (or a YAML that ``_extends:``
-it) and builds every dataclass / kwarg-dict the EKF pipeline needs.
-Every key is required --- missing keys raise :class:`KeyError` with a
-dotted-path message so the failure is precisely localised.
-
-Two-hierarchy contract:
-  * **Default**: ``ekf_tracker/configs/default.yaml`` --- the canonical
-    source of truth, full coverage, bit-exact mirror of the production
-    in-code defaults.
-  * **Customization**: ``configs/ekf_tracker/customization.yaml`` ---
-    user-edited overrides; ``_extends:`` the default and only carries
-    the changed fields.
-
-No env-var overrides, no test-fixture YAMLs, no constructor defaults
-elsewhere.
-
-Public surface
-==============
-
-Resolution
-----------
-* :func:`load_config` --- read a YAML, follow ``_extends:`` chain,
-  return a nested dict.
-
-Dataclass builders (existing API)
----------------------------------
-* :func:`to_bernoulli_config`
-* :func:`to_trigger_config`
-
-Tier-3 builders --- one per subsystem
--------------------------------------
-* :func:`build_birth_gate_config`
-* :func:`build_process_noise_schedule`        (returns dict; no dataclass yet)
-* :func:`build_fast_tier_noise_config`        (returns dict; no dataclass yet)
-* :func:`build_pose_estimator_kwargs`
-* :func:`build_voxel_observability_kwargs`
-* :func:`build_voxel_integrate_kwargs`
-* :func:`build_visibility_kwargs`
-* :func:`build_det_dedup_kwargs`
-* :func:`build_gripper_phase_tracker_kwargs`
-* :func:`build_grasp_owner_detector_kwargs`
-* :func:`build_gravity_predict_kwargs`
-* :func:`build_object_dynamics_table`         (default, table, footprint_factor)
-* :func:`build_relation_orchestrator_kwargs`
-* :func:`build_relation_filter_kwargs`
-* :func:`build_relation_trigger_config`
-* :func:`build_held_set_expansion_kwargs`
-"""
+""":func:`load_config` (with ``_extends:`` deep-merge) plus ``to_*_config`` and subsystem-kwargs builders."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -86,13 +37,7 @@ def _resolve(p: Union[str, Path]) -> Path:
 # ─────────────────────────────────────────────────────────────────────
 
 def _strict_get(d: Mapping[str, Any], *path: str) -> Any:
-    """Lookup a nested key path in ``d``; raise a precise ``KeyError``
-    if any segment is missing.
-
-    Example: ``_strict_get(cfg, "perception", "visibility", "z_tol_abs")``
-    raises ``KeyError('missing config key: perception.visibility.z_tol_abs')``
-    if any intermediate dict is missing the next segment.
-    """
+    """Fetch ``key`` from a dict, raising :class:`KeyError` if missing (no defaults)."""
     cur: Any = d
     walked: List[str] = []
     for seg in path:
@@ -109,10 +54,7 @@ def _strict_get(d: Mapping[str, Any], *path: str) -> Any:
 
 
 class _Section:
-    """Closure-style accessor: ``s = _Section(cfg, "voxel_observability")``,
-    then ``s("n_min_hit")`` looks up ``cfg["voxel_observability"]["n_min_hit"]``
-    and any KeyError carries the full dotted path.
-    """
+    """Wraps a dict subsection so ``_strict_get`` raises with a helpful path."""
     __slots__ = ("_cfg", "_root")
 
     def __init__(self, cfg: Mapping[str, Any], *root: str) -> None:
@@ -161,10 +103,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 def load_config(path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
-    """Load a YAML and resolve any ``_extends:`` chain.
-
-    ``path=None`` returns the canonical default config.
-    """
+    """Load a YAML config, recursively applying ``_extends:`` deep-merge."""
     target = _resolve(path) if path is not None else DEFAULT_PATH
     with open(target, "r") as f:
         cfg = yaml.safe_load(f) or {}
@@ -196,11 +135,7 @@ def to_bernoulli_config(
     image_shape: Optional[Tuple[int, int]] = None,
     T_bc: Optional[np.ndarray] = None,
 ):
-    """Build a :class:`BernoulliConfig` from a loaded config dict.
-
-    ``K``, ``image_shape``, ``T_bc`` are scenario-specific runtime values
-    not carried in the YAML; the caller supplies them.
-    """
+    """Build a :class:`BernoulliConfig` from a loaded dict, ``K``, and ``image_shape``."""
     from ekf_tracker.config import BernoulliConfig
 
     bcfg = dict(_strict_get(cfg, "bernoulli"))
@@ -231,13 +166,7 @@ def to_trigger_config(cfg: Dict[str, Any]):
 # ─────────────────────────────────────────────────────────────────────
 
 def build_birth_gate_config(cfg: Dict[str, Any]):
-    """Build a :class:`BirthGateConfig`.
-
-    Reads from ``bernoulli.birth_min_dist_m`` and
-    ``bernoulli.held_birth_radius_m`` --- no separate ``birth_gate:``
-    section, since these knobs are also exposed via BernoulliConfig and
-    consolidating into one canonical YAML location avoids duplication.
-    """
+    """Build the perception-side :class:`BirthGateConfig`."""
     from perception.birth_gating import BirthGateConfig
     s = _Section(cfg, "bernoulli")
     return BirthGateConfig(
@@ -252,20 +181,7 @@ def build_birth_gate_config(cfg: Dict[str, Any]):
 # ─────────────────────────────────────────────────────────────────────
 
 def build_process_noise_schedule(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the process-noise schedule as a dict::
-
-        {
-            "Q_static_stable":      (6,6) ndarray,
-            "Q_static_unstable":    (6,6) ndarray,
-            "Q_idle":               (6,6) ndarray,
-            "Q_just_released":      (6,6) ndarray,
-            "Q_grasping_releasing": (6,6) ndarray,
-            "Q_holding_base_frame": (6,6) ndarray,
-            "Q_held_world_frame":   (6,6) ndarray,
-            "frames_unstable_threshold": int,
-            "frames_stable_threshold":   int,
-        }
-    """
+    """Build the per-phase :math:`Q` schedule from the YAML ``process_noise`` section."""
     s = _Section(cfg, "process_noise")
     return {
         "Q_static_stable": _diag_from_list(
@@ -295,14 +211,7 @@ def build_process_noise_schedule(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 def build_fast_tier_noise_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the fast-tier noise constants as a dict::
-
-        {
-            "centroid_r_cam_std_m": float,
-            "centroid_r_cam_3d":    (3,3) np.diag of std**2,
-            "tiny_cov":             (6,6) ndarray,
-        }
-    """
+    """Build fast-tier centroid/rotation/tiny-cov noise constants."""
     s = _Section(cfg, "fast_tier_noise")
     std_m = float(s("centroid_r_cam_std_m"))
     return {
@@ -318,26 +227,7 @@ def build_fast_tier_noise_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 def build_pose_estimator_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Return kwargs for ``PoseEstimator`` and its mask-clean / back-project sub-functions.
-
-    Result schema::
-
-        {
-            "voxel_size_m":           float,
-            "icp_threshold_m":        float,
-            "icp_max_iter":           int,
-            "min_fitness":            float,
-            "max_rmse":               float,
-            "trans_var_floor":        float,
-            "rot_var_floor":          float,
-            "centroid_r_diag":        (6,) ndarray  (already-diag entries, lift to (6,6) in caller),
-            "centroid_r":             (6,6) ndarray,
-            "ref_update_min_fitness": float,
-            "max_ref_points":         int,
-            "mask_clean":             {erosion_iter, depth_edge_max_jump, min_depth, max_depth, min_points},
-            "back_project":           {min_depth, max_depth, min_points},
-        }
-    """
+    """Build kwargs for :class:`perception.icp_pose.PoseEstimator`."""
     pe = _Section(cfg, "pose_estimator")
     centroid_r_diag = _vec_from_list(
         "pose_estimator.centroid_r_diag", pe("centroid_r_diag"), n=6)
@@ -484,10 +374,7 @@ def build_gravity_predict_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 def _build_dynamics_property(cfg: Mapping[str, Any], *path: str):
-    """Lift the dict at ``cfg[*path]`` (with fields
-    ``{label, e, mu, shape, radius_m, mass_kg}``) to an
-    :class:`ObjectDynamicsProperty`.
-    """
+    """Resolve one per-label dynamics property (restitution / friction / shape) with default fallback."""
     from utils.object_dynamics import ObjectDynamicsProperty
     s = _Section(cfg, *path)
     return ObjectDynamicsProperty(
@@ -527,9 +414,7 @@ def build_object_dynamics_table(cfg: Dict[str, Any]
 # ─────────────────────────────────────────────────────────────────────
 
 def build_relation_filter_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Return ``RelationFilter.__init__`` kwargs plus the prune-threshold
-    that today is hardcoded at relation_filter.py:59 (``0.01``).
-    """
+    """Build kwargs for :class:`RelationFilter`."""
     rf = _Section(cfg, "relation", "filter")
     return {
         "alpha":           float(rf("alpha")),
@@ -581,16 +466,7 @@ def build_held_set_expansion_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 def build_ekf_tracker_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Return EkfTracker-construction-level knobs::
-
-        {
-            "robot_type":          str,
-            "pose_method":         str,
-            "image_shape":         (int, int),
-            "default_owl_server":  Optional[str],
-            "default_sam2_server": Optional[str],
-        }
-    """
+    """Bundle every runtime kwarg dict :class:`EkfTracker` needs at construction time."""
     et = _Section(cfg, "ekf_tracker")
     img = et("image_shape")
     if not (isinstance(img, (list, tuple)) and len(img) == 2):

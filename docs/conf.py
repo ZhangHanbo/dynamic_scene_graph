@@ -104,12 +104,25 @@ autodoc_mock_imports = [
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
+    "dollarmath",   # $...$ inline math, $$...$$ display math
+    "amsmath",      # \begin{align}…\end{align}
     "linkify",
     "smartquotes",
-    "substitution",
     "tasklist",
     "html_admonition",
 ]
+mathjax3_config = {
+    "tex": {
+        "inlineMath": [["$", "$"], ["\\(", "\\)"]],
+        "displayMath": [["$$", "$$"], ["\\[", "\\]"]],
+        "macros": {
+            "Ad": "\\operatorname{Ad}",
+            "se": "\\mathfrak{se}",
+            "SE": "\\operatorname{SE}",
+            "SO": "\\operatorname{SO}",
+        },
+    },
+}
 myst_heading_anchors = 3
 myst_url_schemes = ("http", "https", "mailto", "ftp")
 

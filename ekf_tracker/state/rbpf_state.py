@@ -1,26 +1,4 @@
-"""
-Rao-Blackwellized Particle Filter state for Layer 2.
-
-Factorization
-    p(x_{1:t}, {o}_i | z_{1:t}) = p(x_{1:t} | z_{1:t}) · Π_i p(o_i | x_{1:t}, z_{1:t})
-
-* p(x_{1:t} | z_{1:t}) — approximated by weighted particles.
-* p(o_i | x_{1:t}, z_{1:t}) — approximated per particle by a Gaussian on SE(3)
-  (an EKF). Each particle therefore carries its own private EKF per object.
-
-Object beliefs are stored in WORLD frame. Conditioning on a particle's
-trajectory sample means the base pose has zero conditional uncertainty for
-that particle, so measurements can be fused cleanly in world frame without
-injecting Σ_wb into R (which would double-count). This is what gives vision
-its "dual role" — the same likelihood enters both:
-  1. the per-particle object EKF update
-  2. the per-particle weight increment
-
-Module layout:
-    ParticleObjectBelief   — per-particle per-object (μ, Σ) in SE(3) world frame
-    Particle               — T_wb + log-weight + {oid: ParticleObjectBelief}
-    RBPFState              — N particles; predict / update / resample / collapse
-"""
+"""Rao-Blackwellized particle filter variant: weighted base particles, each with its own per-object EKF (research backend)."""
 
 from __future__ import annotations
 
@@ -53,34 +31,14 @@ from utils.slam_interface import (
 
 @dataclass
 class ParticleObjectBelief:
-    """Gaussian SE(3) belief about one object, conditional on one particle's
-    trajectory. Stored in world frame.
-
-    Attributes:
-        mu:  (4, 4) SE(3) mean (object-in-world).
-        cov: (6, 6) covariance in se(3) tangent at mu, [v, ω] ordering.
-    """
+    """Per-particle per-object Gaussian belief in the world frame."""
     mu: np.ndarray
     cov: np.ndarray
 
 
 @dataclass
 class Particle:
-    """One hypothesis in the RBPF.
-
-    Attributes:
-        T_wb:       (4, 4) base-to-world pose sample at the current time.
-        prev_T_wb:  (4, 4) base-to-world sample at the previous step, or None
-                    on the first step. Needed by the rigid-attachment predict,
-                    which expresses world-frame motion of a gripper-attached
-                    object as
-                        ΔT_grip_w = T_wb(t) · ΔT_bg · inv(T_wb(t-1))
-                    rather than the simpler similarity transform — otherwise
-                    base motion with a stationary gripper would produce zero
-                    object motion.
-        log_weight: unnormalized log-weight (incremental likelihoods sum here).
-        objects:    per-object EKF state, keyed by object id.
-    """
+    """One RBPF particle: SLAM pose :math:`T_{wb}`, log-weight, and per-object beliefs."""
     T_wb: np.ndarray
     log_weight: float
     objects: Dict[int, ParticleObjectBelief] = field(default_factory=dict)
@@ -92,12 +50,7 @@ class Particle:
 # ─────────────────────────────────────────────────────────────────────
 
 class RBPFState:
-    """Holds N particles and operations on them (predict / update / resample).
-
-    The state does NOT know about object labels, manipulation phases, or
-    frame counters — those are orchestrator concerns. This class is the
-    pure particle-level engine.
-    """
+    """Rao-Blackwellized particle-filter backend: weighted base particles, each carrying its own per-object EKF."""
 
     # Numerical floor for a log-weight (avoids -inf / NaN).
     _LOG_EPS = -1e18
@@ -139,10 +92,7 @@ class RBPFState:
     # ------------------------------------------------------------------ #
 
     def set_camera_extrinsic(self, T_bc: np.ndarray) -> None:
-        """Install `T_bc(t_k)` for THIS frame. Must be called at the top
-        of every step before any measurement-side operation. Matches
-        `GaussianState.set_camera_extrinsic` semantics -- see the
-        docstring there for rationale."""
+        """Update :math:`T_{bc}` for the current frame across every particle."""
         T_bc = np.asarray(T_bc, dtype=np.float64)
         if T_bc.shape != (4, 4):
             raise ValueError(f"T_bc must be (4, 4), got {T_bc.shape}")
@@ -180,16 +130,7 @@ class RBPFState:
     # --------------------------------------------------------------- #
 
     def ingest_slam(self, slam_result) -> None:
-        """Update per-particle T_wb from the latest SLAM result.
-
-        * First call: creates N particles from the SLAM output.
-        * Subsequent calls: overwrites each particle's T_wb in place, keeping
-          object beliefs and log-weights attached to the particle slot.
-
-        A backend that returns a `ParticlePose` with the same count transfers
-        per-particle weight increments into our log-weights (additive in log
-        space). Mismatched counts: we resample to match.
-        """
+        """Take a new SLAM particle posterior, replacing the particle set."""
         if isinstance(slam_result, ParticlePose):
             pp = slam_result
             if pp.n == self.n_particles:
@@ -236,11 +177,7 @@ class RBPFState:
         self._refresh_collapsed_base()
 
     def _refresh_collapsed_base(self) -> None:
-        """Populate self.T_wb / self.prev_T_wb / self.Sigma_wb from the
-        current particle cloud. Called at the end of `ingest_slam` so
-        downstream protocol callers can treat the RBPF and Gaussian
-        backends uniformly.
-        """
+        """Cache the particle-mean :math:`T_{wb}` for downstream consumers."""
         if not self.particles:
             self.T_wb = None
             self.prev_T_wb = None
@@ -260,24 +197,7 @@ class RBPFState:
                       oid: int,
                       T_co_meas: np.ndarray,
                       init_cov: np.ndarray) -> bool:
-        """Create an entry for `oid` in each particle that lacks one.
-
-        The world-frame mean is per-particle:
-            μ^k_o = T_wb^k · T_bc · T_co_meas
-        `init_cov` is treated as an already-in-storage-frame (world-
-        frame tangent) prior, not as camera-frame measurement noise --
-        same convention as `GaussianState.ensure_object` (see the
-        docstring there for why Ad-lifting a loose rotation prior
-        through `Ad(T_wb^k T_bc)` lever-arms into an impractical
-        translation variance for Fetch-style `|t_bc| ~ 1 m`).
-
-        Σ_wb is NOT added to `init_cov`: per-particle conditional has
-        Σ_wb = 0 by Rao-Blackwellization; the spread across particles
-        captures the full SLAM uncertainty at collapse time.
-
-        Returns True if a new object entry was added in at least one
-        particle, else False.
-        """
+        """Add a new object to every particle from the first observation."""
         T_co_meas = np.asarray(T_co_meas, dtype=np.float64)
         T_bc = self.T_bc
         init_cov_sym = 0.5 * (init_cov + init_cov.T)
@@ -301,20 +221,7 @@ class RBPFState:
 
     def predict_objects(self, Q_fn: Callable[[int, Particle], np.ndarray],
                         P_max: Optional[np.ndarray] = None) -> None:
-        """Apply per-particle EKF predict to every tracked object.
-
-        Q_fn(oid, particle) → (6,6) process noise. This lets the caller pick
-        Q based on manipulation phase, frames-since-obs, etc.
-
-        P_max is the optional covariance-saturation cap of ekf_se3.ekf_predict
-        (bernoulli_ekf.tex eq. eq:phi). Default None = no cap, matching
-        pre-Bernoulli behaviour.
-
-        Note: constant-velocity mean (T unchanged); covariance inflates by Q.
-        For manipulation-set members the caller should apply
-        `rigid_attachment_predict` AFTER this generic predict (the Q here is
-        additive).
-        """
+        """Per-particle world-static predict for every tracked object."""
         for p in self.particles:
             for oid, belief in p.objects.items():
                 Q = Q_fn(oid, p)
@@ -325,29 +232,7 @@ class RBPFState:
                                  oid: int,
                                  delta_T_grip_b: np.ndarray,
                                  Q_manip: np.ndarray) -> None:
-        """Apply a rigid-attachment predict to `oid` in every particle.
-
-        `delta_T_grip_b = T_bg(t) · inv(T_bg(t-1))` is the gripper change in
-        the BASE frame (particle-independent — from proprioception).
-
-        World-frame kinematics of an object rigidly attached to the gripper:
-            T_wo(t) = T_wb(t) · T_bg(t) · T_go
-            T_wo(t-1) = T_wb(t-1) · T_bg(t-1) · T_go
-            ⇒ T_wo(t) = T_wb(t) · ΔT_bg · inv(T_wb(t-1)) · T_wo(t-1)
-
-        So the world-frame transform we apply is
-            ΔT_grip_w^k = T_wb^k(t) · ΔT_bg · inv(T_wb^k(t-1))
-
-        Crucially, this formula captures both the gripper change AND the
-        base change within the same transform — if the base moves but
-        gripper-in-base does not, the object still moves in world.
-
-        On the very first frame (no prev_T_wb) we fall back to the
-        similarity form T_wb(t) · ΔT_bg · inv(T_wb(t)), which is only
-        correct when the base is stationary.
-
-        Covariance: μ ← ΔT_grip_w · μ; Σ ← Ad(ΔT_grip_w) · Σ · Ad(.)ᵀ + Q_manip.
-        """
+        r"""Per-particle rigid-attachment predict: :math:`\mu_{wo} \leftarrow \Delta T_{wg}\, \mu_{wo}`."""
         for p in self.particles:
             belief = p.objects.get(oid)
             if belief is None:
@@ -370,32 +255,7 @@ class RBPFState:
                            iekf_iters: int = 2,
                            huber_w: float = 1.0,
                            P_max: Optional[np.ndarray] = None) -> None:
-        """Per-particle IEKF update + per-particle likelihood accumulation.
-
-        For particle k:
-            T_wo_meas^k = T_wb^k · T_co_meas
-            δ^k         = log( μ^k · exp(-K δ) ... ) via IEKF relinearization
-            S^k         = Σ^k_o + R_icp / w
-            log p(z|x^k, o^k) = -½ δ^kᵀ S^{-1} δ^k - ½ log det(2πS)
-
-        The log-likelihood is added to particle.log_weight — that is how
-        vision reweights the trajectory posterior (in addition to updating
-        the object EKF). This is the whole point of RBPF here.
-
-        R_icp is treated as a world-frame 6×6 covariance; callers who have
-        noise in camera frame should transform with Ad(T_wb · T_bc) upstream.
-
-        Args:
-            huber_w: Huber redescending M-estimator weight in [0, 1] from
-                ekf_se3.huber_weight(). Scales R by 1/w so the gain shrinks
-                with d^2. Default 1.0 = no Huber (pre-Bernoulli behaviour).
-                A caller passing w = 0 should NOT invoke this method (route
-                the detection to the missed branch instead); we treat it as
-                a clamp to a large reweight for numerical safety only.
-            P_max: optional (6, 6) covariance-saturation cap applied to the
-                posterior (bernoulli_ekf.tex eq. eq:phi). Default None =
-                no cap, matching pre-Bernoulli behaviour.
-        """
+        """Per-particle 6-DOF IEKF update from a camera-frame measurement."""
         T_co_meas = np.asarray(T_co_meas, dtype=np.float64)
         T_bc = self.T_bc
         for p in self.particles:
@@ -432,24 +292,7 @@ class RBPFState:
                                      huber_w: float = 1.0,
                                      P_max: Optional[np.ndarray] = None
                                      ) -> None:
-        """Translation-only per-particle Kalman update from a camera-frame
-        centroid (3-DoF fallback for when fine ICP fails).
-
-        For particle k:
-            t_wc          = T_wb^k · T_bc · [centroid_cam; 1]   (world-frame position meas)
-            R_wo_tt       = R_wc · R_cam · R_wc^T   (with R_wc = (T_wb^k·T_bc)[:3,:3])
-            ν_t^k         = t_wc - μ_wo^k[:3, 3]
-            S^k           = P^k[:3, :3] + R_wo_tt / w
-            K_full^k      = P^k[:, :3] · S^k^{-1}   (6×3; includes rotation gain
-                              induced by translation-rotation cross-terms in P)
-            μ_wo^k        ← μ_wo^k ⊞ [K_full^k @ ν_t^k]
-            P^k           ← Joseph update with H = [I_3 | 0_3×3]
-            p.log_weight += log_lik_3D
-
-        Parallel to `update_observation` but operates on the 3×3 translation
-        partition only; measurement rotation is unobserved. Mirrors
-        `GaussianState.update_observation_centroid`.
-        """
+        """Per-particle translation-only Kalman update from a camera-frame centroid."""
         if huber_w <= 0.0:
             return
         centroid_cam = np.asarray(centroid_cam, dtype=np.float64).reshape(3)
@@ -527,18 +370,7 @@ class RBPFState:
                          oid: int,
                          T_co_meas: np.ndarray,
                          R_icp: np.ndarray) -> Optional[tuple]:
-        """Weighted-particle-averaged innovation quantities for a
-        (track, measurement) pair; used to build the Hungarian cost matrix.
-
-        Returns (nu, S, d2, log_lik) where:
-            nu    = innovation in se(3) tangent at the collapsed prior mean
-            S     = residual covariance (Sigma_obj + R_icp), collapsed
-            d2    = nu^T S^{-1} nu
-            log_lik = Gaussian log-likelihood of the innovation (cf.
-                      bernoulli_ekf.tex eq. eq:ekf_lik)
-
-        None is returned if `oid` does not exist in any particle.
-        """
+        r"""Per-particle innovation :math:`(\nu, S, d^2, \log\!\mathcal{L})`, then particle-weight averaged."""
         collapsed = self.collapsed_object(oid)
         if collapsed is None:
             return None
@@ -558,8 +390,7 @@ class RBPFState:
     # --------------------------------------------------------------- #
 
     def delete_object(self, oid: int) -> bool:
-        """Remove `oid` from every particle. Returns True if any particle
-        held this object, else False."""
+        """Remove a track from every particle; returns True if it existed."""
         removed = False
         for p in self.particles:
             if oid in p.objects:
@@ -572,13 +403,7 @@ class RBPFState:
     # --------------------------------------------------------------- #
 
     def resample_if_needed(self, threshold_frac: float = 0.5) -> bool:
-        """Systematic resample if ESS drops below `threshold_frac · N`.
-
-        On resample: each selected particle is deep-copied (T_wb + per-object
-        (μ, Σ)) and its log-weight reset to 0 (uniform in log-space).
-
-        Returns True if resampling fired, else False.
-        """
+        """Systematic resampling when the effective sample size falls below threshold."""
         N = self.n_particles
         if self.ess() >= threshold_frac * N:
             return False
@@ -619,17 +444,7 @@ class RBPFState:
                                    centroid_cam: np.ndarray,
                                    R_cam: Optional[np.ndarray] = None,
                                    ) -> Optional[tuple]:
-        """3-DOF centroid innovation at the collapsed (weighted-mean)
-        posterior. Mirrors `GaussianState.centroid_innovation_stats`.
-
-        Lift:
-            t_wo_meas = T_wb · T_bc · [centroid_cam; 1]
-            R_wo_tt   = R_tt(T_wb T_bc) · R_cam · R_tt(·)^T
-        Innovation and d^2 computed in the world-frame translation
-        tangent at the collapsed μ_wo. Σ_wb is NOT added (matches the
-        6D `innovation_stats` in this class: the single-Gaussian
-        Hungarian approximation, not the per-particle conditional).
-        """
+        """Per-particle 3-DOF centroid innovation, particle-weight averaged."""
         collapsed = self.collapsed_object(oid)
         if collapsed is None:
             return None
@@ -682,12 +497,7 @@ class RBPFState:
 
     def camera_frame_prior(self,
                             oid: int) -> Optional[np.ndarray]:
-        """T_co^pred = (T_wb · T_bc)^{-1} · collapsed μ_wo (BasePoseBackend).
-
-        Used to seed ICP before Hungarian. Uses the collapsed (weighted-mean)
-        base pose and object mean, which is the standard single-Gaussian
-        approximation used for data association; per-particle updates
-        remain mixture-exact."""
+        r"""ICP seed :math:`T_{co}^{\text{pred}}` averaged across particles, or ``None``."""
         collapsed = self.collapsed_object(oid)
         if collapsed is None:
             return None
@@ -698,13 +508,7 @@ class RBPFState:
                             Q_fn: Callable[[int], np.ndarray],
                             skip_oids: Optional[set] = None,
                             P_max: Optional[np.ndarray] = None) -> None:
-        """Static-object predict for every oid not in `skip_oids`
-        (BasePoseBackend).
-
-        World-frame storage: μ unchanged, Σ inflates by Q_fn(oid) per
-        particle. Held tracks (in `skip_oids`) get Q=0 so the caller's
-        `rigid_attachment_predict` is the only source of inflation for them.
-        """
+        """Run :meth:`predict_objects` for every oid not in ``skip_oids``."""
         skip = skip_oids or set()
         def _Q(oid: int, _p: Particle) -> np.ndarray:
             if oid in skip:
@@ -713,13 +517,7 @@ class RBPFState:
         self.predict_objects(_Q, P_max=P_max)
 
     def collapsed_object_base(self, oid: int) -> Optional[PoseEstimate]:
-        """Collapsed object posterior projected back into base frame
-        (BasePoseBackend).
-
-            μ_bo = T_wb^{-1} · μ_wo
-            Σ_bo = Σ_wo (approximation; the mixture spread already
-                    absorbed Σ_wb via the particle cloud).
-        """
+        r"""Particle-mean base-frame :math:`(\mu, \Sigma)` for ``oid``, or ``None``."""
         pe = self.collapsed_object(oid)
         if pe is None:
             return None
@@ -729,9 +527,7 @@ class RBPFState:
         return PoseEstimate(T=mu_bo, cov=pe.cov.copy())
 
     def merge_tracks(self, oid_keep: int, oid_drop: int) -> bool:
-        """Per-particle Bayesian information fusion of two tracks
-        (BasePoseBackend). Each particle's (μ_keep, Σ_keep) is merged
-        with (μ_drop, Σ_drop); the drop oid is then removed."""
+        """Merge ``oid_drop`` into ``oid_keep`` per-particle."""
         if oid_keep == oid_drop:
             return False
         any_merged = False
@@ -753,13 +549,7 @@ class RBPFState:
     def overwrite_object_pose(self, oid: int,
                               T_wo: np.ndarray,
                               P_wo: np.ndarray) -> bool:
-        """Force every particle's `(mu, cov)` for `oid` to `(T_wo, P_wo)`.
-
-        Used by the gravity-aware predict at release to install a
-        post-fall world-frame pose into the filter; per-particle
-        collapsed view will then yield exactly `(T_wo, P_wo)`. Returns
-        True iff at least one particle carried the oid.
-        """
+        """Force every particle's belief for ``oid`` to a world-frame :math:`(T_{wo}, P_{wo})`."""
         T_wo = np.asarray(T_wo, dtype=np.float64)
         P_wo = np.asarray(P_wo, dtype=np.float64)
         if T_wo.shape != (4, 4) or P_wo.shape != (6, 6):
@@ -783,18 +573,7 @@ class RBPFState:
         return ParticlePose(particles=Ts, weights=ws).to_gaussian()
 
     def collapsed_object(self, oid: int) -> Optional[PoseEstimate]:
-        """Mixture-of-Gaussians → single Gaussian summary for one object.
-
-        Uses the standard formula:
-            μ̄  = Lie-group weighted mean of {μ_k}
-            Σ̄  = Σ_k w_k · Σ_k  +  Σ_k w_k · (μ_k ⊖ μ̄)(μ_k ⊖ μ̄)ᵀ
-
-        `ParticlePose.to_gaussian` already computes the mean AND the
-        second (spread) term, so we just add the expected per-particle
-        cov `E[Σ_k]` on top.
-
-        Returns None if no particle has this object yet.
-        """
+        """Particle-mean world-frame :math:`(T_{wo}, P_{wo})` for ``oid``."""
         ws_all = self.normalized_weights()
         mus: List[np.ndarray] = []
         covs: List[np.ndarray] = []
@@ -841,14 +620,7 @@ class RBPFState:
     # --------------------------------------------------------------- #
 
     def inject_posterior(self, oid: int, posterior: PoseEstimate) -> None:
-        """Shift every particle's belief for `oid` toward a single posterior.
-
-        Each particle's mean is set to the posterior mean; each particle's
-        covariance is set to the posterior covariance. This is Option A from
-        the plan — loses mixture structure, but is the minimal change that
-        lets the slow-tier re-ingested raw observations flow back into the
-        fast tier.
-        """
+        """Re-center every particle's belief from a slow-tier world-frame posterior."""
         for p in self.particles:
             if oid in p.objects:
                 p.objects[oid] = ParticleObjectBelief(

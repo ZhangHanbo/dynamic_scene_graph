@@ -1,14 +1,4 @@
-"""Gaussian-EKF tracker (base-frame storage, Bernoulli existence).
-
-This is the canonical fast-tier EKF used by the visualization driver
-and the public ``EkfTracker`` facade.
-
-Owns:
-  * ``GaussianState`` (object-in-base-frame Gaussian belief)
-  * ``PoseEstimator`` (per-detection ICP)
-  * ``ChainStore`` (per-track loop-closure-aware observation chains)
-  * Bernoulli existence ``r`` per track + soft label histories
-"""
+"""Fast tier — base-frame Bernoulli-EKF with Hungarian association, ICP, and observation chains."""
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -52,27 +42,7 @@ from perception.visibility import visibility_p_v
 
 
 class GaussianEkfTracker:
-    """Base-frame Gaussian-EKF tracker with Bernoulli existence.
-
-    Refactored to base-frame storage (bernoulli_ekf.tex §1.1, §3).
-
-    Owns a `GaussianState` (object-in-base poses; Σ_wb never enters the
-    recursion), a `PoseEstimator` (ICP chain mode) that converts
-    (mask, depth) into camera-frame `(T_co, R_icp)` per detection,
-    and Bernoulli bookkeeping in `self.existence / self.object_labels /
-    self.sam2_tau / self.label_scores`.
-
-    `step()` returns a debug dict containing:
-      enter_tracks      — tracks at start of frame
-      post_predict_tracks — after predict step
-      assoc             — {match, unmatched_tracks, unmatched_dets, cost_matrix}
-      matched           — per-pair {d2, w, log_lik, r_prev, r_new}
-      missed            — per-track {p_v, p_d_tilde, r_prev, r_new}
-      births            — per-birth {det_idx, new_oid, r_new, label, score}
-      pruned            — per-prune {oid, r}
-      post_update_tracks — final state
-      slam_pose         — T_wb this frame  (used only for output composition)
-    """
+    """Single-Gaussian fast tier: per-frame predict → associate → update → birth → prune in the base frame."""
 
     # Phases under which rigid-attachment predict is active. `releasing`
     # is intentionally excluded: even though `held_obj_id` may still be
@@ -83,13 +53,7 @@ class GaussianEkfTracker:
 
     @staticmethod
     def should_apply_rigid(T_bg, prev_T_bg, manipulation_set, phase) -> bool:
-        """Predicate for the rigid-attachment branch of the fast tier.
-
-        Rigid attach is applied iff (a) we have two consecutive proprio
-        samples to form ΔT_bg, (b) some object is in the manipulation
-        set, AND (c) the gripper is actually closed around the object
-        (phase in {grasping, holding}).
-        """
+        """True if the held object's predict should use rigid attachment instead of static motion."""
         return (T_bg is not None
                 and prev_T_bg is not None
                 and bool(manipulation_set)
@@ -192,17 +156,7 @@ class GaussianEkfTracker:
 
     # ────────── state capture helper ──────────
     def _capture_tracks(self) -> Dict[int, Dict[str, Any]]:
-        """Snapshot every track in BASE FRAME (the storage convention).
-
-        Two world-frame views are derived:
-          * `T_world`        -- the EKF current base-frame mean composed
-                                with `T_wb` (one-step Markov; what the
-                                top-down panels have been showing).
-          * `T_world_chain`  -- the chain smoother's world-frame mean
-                                from `obs_chain.world_frame_estimate`,
-                                which is loop-closure-aware. Returns
-                                None if the chain is empty.
-        """
+        """Snapshot per-track means, covariances, labels, and Bernoulli :math:`r` for downstream consumers."""
         T_wb = self.state.T_wb if self.state.T_wb is not None else np.eye(4)
         T_bc = self.state.T_bc
         out: Dict[int, Dict[str, Any]] = {}
@@ -264,23 +218,12 @@ class GaussianEkfTracker:
 
     # ────────── birth / prune ──────────
     def _mint_tracker_oid(self, det: Dict[str, Any] = None) -> int:
-        """Mint a fresh tracker oid (always a new consecutive int).
-
-        Perception's detection id is data-side metadata and must not
-        leak into the tracker's identity space; the tracker oid is
-        assigned exclusively here and only at admission time. `det`
-        is accepted for signature compatibility but unused.
-        """
+        """Allocate a new tracker oid for a newly admitted SAM2 tracklet."""
         return max(self.object_labels.keys(), default=0) + 1
 
     def _birth(self, det: Dict[str, Any],
                forced_oid: Optional[int] = None) -> Optional[int]:
-        """Initialize a new Bernoulli track from an unmatched detection.
-
-        When `forced_oid` is provided (e.g. the caller minted the oid
-        first in order to run ICP against `_refs[oid]`), it is used
-        instead of the SAM2-id-fallback logic in `_mint_tracker_oid`.
-        """
+        """Initialize a new track from the first observation, gated by ICP fitness/RMSE."""
         if forced_oid is not None:
             d_id = int(forced_oid)
         else:
@@ -339,12 +282,7 @@ class GaussianEkfTracker:
 
     def _candidate_near_live_track(self, det: Dict[str, Any]
                                     ) -> Optional[Dict[str, Any]]:
-        """Thin wrapper around :func:`perception.birth_gating.is_near_live_track`.
-
-        See that function for behaviour. This method simply provides
-        the tracker context (T_wb, T_bc, held oid, T_we, cfg) so the
-        production helper can be called.
-        """
+        """True if a candidate detection lies within ``birth_min_dist_m`` of a same-label live track."""
         from perception.birth_gating import (
             BirthGateConfig, is_near_live_track,
         )
@@ -367,15 +305,7 @@ class GaussianEkfTracker:
     def _compute_visibility(self,
                             depth: np.ndarray,
                             image_shape: tuple) -> Dict[int, float]:
-        """Per-track p_v via depth ray-tracing (see `perception.visibility`).
-
-        Projects each track's object-local reference cloud (from
-        `PoseEstimator._refs[oid].ref_points` — the accumulated surface
-        model) through the current `T_bc(t)` + predicted base-frame
-        mean, reads the depth image at every projected pixel, and z-
-        tests against the predicted sample depth. Fully self-contained
-        in the camera frame; no SLAM uncertainty enters.
-        """
+        """Per-track visibility :math:`p_v^{(i)}` via depth-image z-buffer ray tracing."""
         T_bc = self.state.T_bc
         T_cb = np.linalg.inv(T_bc)
         tracks: List[Dict[str, Any]] = []
@@ -411,26 +341,7 @@ class GaussianEkfTracker:
              relation_edges: Optional[Iterable] = None,
              T_bc: Optional[np.ndarray] = None
              ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        """One frame of base-frame Bernoulli-EKF tracking.
-
-        Args:
-            T_wb: SLAM base-in-world; only ΔT_wb (frame-to-frame) is
-                  used as the world-static control input u_k =
-                  inv(ΔT_wb). Σ_wb does not enter the recursion.
-            T_bg: optional gripper-in-base; ΔT_bg drives the held-object
-                  control input u_k = ΔT_bg.
-            held_oids: optional set of track oids currently held by the
-                  gripper / in the manipulation set. Their predict uses
-                  rigid_attachment_predict instead of the static path.
-            T_bc: optional (4,4) base-to-camera-optical extrinsic for
-                  THIS frame. When supplied, lets the tracker handle
-                  head pan/tilt/torso-lift motion correctly: the
-                  measurement lift `T_bo = T_bc(t) · T_co` and the ICP
-                  prior `T_co_init = T_bc(t)^{-1} · T_bo` use the
-                  per-frame value. When None, falls back to whatever
-                  was set at construction (default identity, i.e.
-                  camera == base).
-        """
+        """One frame: predict → Hungarian association → IEKF update → Bernoulli :math:`r` update → birth/prune."""
         dbg: Dict[str, Any] = {"frame": self._frame_count,
                                 "slam_pose": T_wb.copy()}
 
@@ -1284,27 +1195,7 @@ class GaussianEkfTracker:
                           held_id: Optional[int] = None,
                           protected_pairs: Optional[Set[Tuple[int, int]]] = None,
                           ) -> List[Dict[str, Any]]:
-        """Find pairs of same-label tracks whose belief means are within
-        `self_merge_trans_m` metres of each other and merge them via
-        Bayesian information fusion.
-
-        Gate metric is Euclidean (not Mahalanobis) so the merge radius is
-        invariant to how tight/loose the two tracks' covariances are; two
-        fresh births at 22 cm cannot collapse just because σ = 5 cm.
-
-        Greedy: visit candidate pairs sorted by ascending distance; merge
-        each pair only if BOTH tracks still exist (not yet absorbed into
-        a previous merge).
-
-        `held_id`: if provided, this oid is *always* chosen as the
-        keeper in any pair it's in, so its identity (and rigid-
-        attachment kinematics) survives the merge.
-
-        `protected_pairs`: unordered ``(min_oid, max_oid)`` tuples that
-        the scene graph asserts are distinct physical objects (e.g. an
-        apple resting on a tray). Such pairs are skipped — they should
-        never collapse regardless of how close the centroids drift.
-        """
+        """Merge same-label tracks whose means are within ``self_merge_trans_m`` and Bayesian-fuse their covariances."""
         cfg = self.cfg
         gate_m = float(cfg.self_merge_trans_m)
         if gate_m <= 0.0:

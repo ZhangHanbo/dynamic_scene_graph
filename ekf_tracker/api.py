@@ -1,11 +1,4 @@
-"""Public API for the EKF tracker.
-
-`EkfTracker` reproduces the per-frame pipeline of
-``scripts/visualize_ekf_tracking.py:main()`` as a single Python class
-so that external apps can drive the same correct pipeline without
-re-implementing it. See ``docs/`` and the visualization script for
-the per-stage rationale.
-"""
+"""Public facade for the EKF tracker: :class:`EkfTracker` plus the :class:`EkfObject` and :class:`SceneView` snapshots."""
 from __future__ import annotations
 
 import base64
@@ -58,13 +51,7 @@ class SceneView:
 def _default_bernoulli_cfg(K: np.ndarray,
                            image_shape: Tuple[int, int] = (480, 640),
                            ) -> BernoulliConfig:
-    """Build the production-default :class:`BernoulliConfig`.
-
-    Equivalent to the previous inline construction (verified
-    bit-exactly by ``tests/integration/test_config_loader.py::
-    test_default_yaml_matches_production_defaults``); the values now
-    live in ``ekf_tracker/configs/default.yaml``.
-    """
+    """Build a default :class:`BernoulliConfig` from ``configs/default.yaml``."""
     from ekf_tracker.configs import load_config, to_bernoulli_config
     return to_bernoulli_config(load_config(),
                                 K=K, image_shape=image_shape)
@@ -90,21 +77,7 @@ def _decode_mask_b64_to_uint8(mask_b64: str) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────
 
 class EkfTracker:
-    """Reproduces ``visualize_ekf_tracking.main()``'s per-frame pipeline.
-
-    Usage::
-
-        tracker = EkfTracker(K=K, T_bc=T_bc)
-        for rgb, depth, slam_pose, T_bc, T_bg, w, joints, dets in stream:
-            scene = tracker.step(
-                detections=dets, rgb=rgb, depth=depth,
-                slam_pose=slam_pose, T_bc=T_bc, T_bg=T_bg,
-                gripper_width=w, joints=joints,
-            )
-
-    See :func:`scripts.visualize_ekf_tracking.main` for the canonical
-    pipeline this class mirrors. No additional behaviour is layered on.
-    """
+    """Five-method facade over the fast tier, perception pipeline, manipulation, and relations."""
 
     def __init__(
         self,
@@ -234,40 +207,7 @@ class EkfTracker:
                vocabulary: List[str],
                history: Any = None,
                ) -> Tuple[List[Dict[str, Any]], Any]:
-        """Run the full OWL + SAM2-streaming detection pipeline.
-
-        Composes:
-          * live OWL on this frame (``call_owl`` → boxes + labels + scores),
-          * SAM2 streaming session (``SAM2StreamClient``) — propagates
-            currently-seeded tracks into this frame, mints stable
-            ``object_id`` for new seeds via ``add_box``,
-          * Hungarian + greedy fallback to associate OWL boxes with
-            propagated tracks; new-seed admission for unmatched OWL
-            boxes above ``new_seed_min_score``,
-          * track-to-track self-merge.
-
-        Args:
-            rgb: (H, W, 3) uint8 RGB image.
-            vocabulary: list of object class queries (passed to OWL).
-            history: SAM2 streaming session handle. Pass ``None`` on the
-                first call to lazily open a session; thread the returned
-                value through subsequent calls. Call ``history.close()``
-                when done to release server-side state.
-
-        Returns:
-            ``(detections, history)``.
-
-            ``detections`` is a list of per-instance dicts that drop
-            cleanly into ``EkfTracker.step``:
-                ``{id, object_id, label, score, mean_score, n_obs,
-                   labels, box, mask}``.
-            The ``id`` (alias of ``object_id``) is the SAM2 tracklet
-            ID — stable across frames for the same physical object,
-            so the EKF's ``sam2_tau`` cache populates correctly.
-
-            ``history`` is the live ``LiveDetectionPipeline`` session.
-            Hard-errors if the OWL or SAM2 server is unreachable.
-        """
+        """Run the OWLv2 + SAM2-streaming detection pipeline on one RGB frame."""
         from ekf_tracker.perception_pipeline import LiveDetectionPipeline
         if history is None:
             history = LiveDetectionPipeline(
@@ -299,13 +239,7 @@ class EkfTracker:
         gripper_width: Optional[float] = None,
         joints: Optional[Dict[str, float]] = None,
     ) -> SceneView:
-        """One frame of the canonical pipeline.
-
-        Mirrors lines 3492-3680 of ``visualize_ekf_tracking.main()``.
-
-        ``slam_pose`` is the world-frame base SLAM pose ``T_wb``
-        (alias).
-        """
+        """One frame of the canonical pipeline (predict → associate → update → birth → prune); returns a :class:`SceneView`."""
         K = self.K
         T_bc_for_vox = T_bc if T_bc is not None else np.eye(4)
 
@@ -542,7 +476,7 @@ class EkfTracker:
     # ─────────────────────────────────────────────────────────────────
 
     def get_scene(self) -> SceneView:
-        """Read-only snapshot of currently tracked objects + relations."""
+        """Read-only snapshot of the current tracked objects and relations."""
         objects: Dict[int, EkfObject] = {}
         world = self._tracker.state.collapsed_objects_world() or {}
         for oid, pe in world.items():
@@ -568,20 +502,7 @@ class EkfTracker:
     # ─────────────────────────────────────────────────────────────────
 
     def get_points(self, object_id: int) -> np.ndarray:
-        """Accumulated point cloud for one tracked object (world frame).
-
-        GaussianEkfTracker's per-object geometry is the ICP reference
-        cloud accumulated in :class:`perception.icp_pose.PoseEstimator`.
-        We transform it from the object-local frame to world via the
-        current world-frame mean.
-
-        Returns ``(N, 3) float32`` in world coordinates. The returned
-        array is **empty** (shape ``(0, 3)``) when:
-          * ``object_id`` is not a currently tracked oid, OR
-          * the track exists but its ICP reference cloud has not
-            accumulated any points yet (e.g. the very first frame
-            after birth, before the first measurement update).
-        """
+        """Accumulated ICP point cloud for ``object_id`` in world coordinates."""
         ref = self._tracker.pose_est._refs.get(int(object_id))
         if ref is None or getattr(ref, "ref_points", None) is None:
             return np.empty((0, 3), dtype=np.float32)
@@ -602,17 +523,7 @@ class EkfTracker:
     # ─────────────────────────────────────────────────────────────────
 
     def smooth(self) -> SceneView:
-        """Run the slow-tier ``PoseGraphOptimizer`` over the current
-        priors + cached relation graph and return the refreshed scene.
-
-        Re-uses the ``slam_pose / T_bc / T_bg / held_seed`` captured
-        during the most recent ``step()`` call.
-
-        **No-op behaviour**: when ``step()`` has never been called
-        (no slam context yet), returns the empty :class:`SceneView`
-        unchanged — no exception, no log. Callers that need to detect
-        this can check ``len(SceneView.objects) == 0``.
-        """
+        """Run the slow-tier :class:`PoseGraphOptimizer` and return the refreshed scene."""
         if self._last_slam_pose is None:
             # Nothing to smooth over yet — just return the empty scene.
             return self.get_scene()

@@ -1,31 +1,4 @@
-"""
-Per-track observation chain --- canonical world-frame state for the
-Bernoulli-EKF tracker (bernoulli_ekf.tex Section "Per-track observation
-chain").
-
-The Bernoulli-EKF in `gaussian_state.GaussianState` is a one-step
-Markov filter: its posterior depends only on the previous posterior
-and the current measurement. That makes it cheap and compatible with
-per-frame Hungarian association, but it cannot absorb retroactive
-SLAM updates (loop closures, bundle adjustment) -- once `T_wb,k` flows
-through `predict_static`'s `u_k = inv(ΔT_wb,k)`, any later revision to
-`T_wb,k` is unrecoverable.
-
-The observation chain is the parallel, append-only representation that
-DOES absorb such revisions. Per track:
-
-    H^(i) = [ ChainEntry(frame_k, T_co_k, R_icp_k), ... ]
-
-Each entry is a CAMERA-frame ICP measurement -- the chain stores no
-localization quantity. World-frame composition is a post-hoc smoothing
-pass (`world_frame_estimate`) that takes the current SLAM pose history
-{T_wb,k} (and optionally per-frame Σ_wb,k) and a fixed extrinsic T_bc.
-
-This module is intentionally minimal: append, world-frame Karcher mean,
-prune. The slow-tier factor-graph solver in `pose_update/factor_graph.py`
-can consume the same data structure when promoted to a full
-object-SLAM smoother.
-"""
+"""Append-only camera-frame ICP observation chain so retroactive SLAM corrections can be re-projected to world without losing object information."""
 
 from __future__ import annotations
 
@@ -39,12 +12,7 @@ from utils.ekf_se3 import se3_exp, se3_log, se3_adjoint
 
 @dataclass
 class ChainEntry:
-    """One observation: the camera-frame ICP output at frame `k`.
-
-    All quantities are pure perception; nothing in here references the
-    world frame. World-frame composition uses an external
-    `T_wb_history[frame] -> SE(3)` mapping at query time.
-    """
+    """One entry of an observation chain: timestamp, camera-frame ICP pose, fitness, RMSE."""
     frame: int
     T_co: np.ndarray            # (4, 4) ICP pose, camera frame
     R_co: np.ndarray            # (6, 6) ICP covariance, camera frame
@@ -92,34 +60,7 @@ class TrackObsChain:
             max_iter: int = 5,
             tol: float = 1e-6,
     ) -> Optional[Tuple[np.ndarray, np.ndarray, int]]:
-        """Smoothing world-frame pose for this track
-        (bernoulli_ekf.tex eq:chain_smooth).
-
-        For each chain entry we lift to the world frame via
-            T_wo,n = T_wb,k_n · T_bc · T_co,n           (eq:chain_lift_T)
-            R_wo,n = Ad(T_wo,n^{-1}) Σ_wb,k_n Ad(.)^T
-                     + Ad(T_bc) R_co,n Ad(T_bc)^T        (eq:chain_lift_R)
-        and then solve a weighted Karcher mean on SE(3) by Gauss-Newton.
-
-        Args:
-            T_wb_history: mapping frame_idx -> (4,4) base-in-world from
-                          (the latest) SLAM. Loop-closure-aware callers
-                          pass the updated history; the chain itself is
-                          untouched.
-            T_bc:         (4,4) fixed camera-in-base extrinsic.
-            Sigma_wb_history: optional mapping frame_idx -> (6,6)
-                          SLAM pose covariance. When supplied, weights
-                          are 1/tr(R_wo,n); otherwise weights default to
-                          1/tr(R_co,n) (Σ_wb is treated as zero,
-                          matching the test-harness baseline).
-            max_iter, tol: Gauss-Newton convergence.
-
-        Returns:
-            (T_wo, Σ_wo, n_used) where Σ_wo is the information-weighted
-            posterior covariance in the tangent at T_wo. Returns None
-            if the chain is empty or every entry's frame is missing
-            from T_wb_history.
-        """
+        """Compose the per-entry camera-frame poses with the cached :math:`T_{wb}` to produce world-frame poses."""
         if not self.entries:
             return None
         T_bc = np.asarray(T_bc, dtype=np.float64)
@@ -197,8 +138,7 @@ class TrackObsChain:
 
     def to_jsonable(self,
                      max_dump: int = 50) -> Dict[str, object]:
-        """Lightweight JSON-friendly summary (does NOT include full
-        per-entry matrices unless `max_dump > 0`)."""
+        """Serialize the chain to a JSON-friendly dict."""
         out: Dict[str, object] = {"len": len(self.entries)}
         if not self.entries:
             return out
@@ -220,12 +160,7 @@ class TrackObsChain:
 
 
 class ChainStore:
-    """Per-track chain registry plus a SLAM pose-history cache.
-
-    The cache is a simple dict {frame -> T_wb}; loop-closure-aware
-    callers can replace entries when SLAM revises the trajectory.
-    `world_frame_estimate(oid)` reads the latest cache.
-    """
+    """Per-track append-only ICP chain registry."""
 
     def __init__(self) -> None:
         self.chains: Dict[int, TrackObsChain] = {}
@@ -262,8 +197,7 @@ class ChainStore:
 
     def revise_pose(self, frame: int, T_wb: np.ndarray,
                      Sigma_wb: Optional[np.ndarray] = None) -> None:
-        """Loop-closure / SLAM-update hook: overwrite a previous pose.
-        World-frame chain estimates picked up next will reflect this."""
+        """Re-project a chain to world after a retroactive SLAM correction."""
         self.record_pose(frame, T_wb, Sigma_wb)
 
     # --- world-frame queries ---

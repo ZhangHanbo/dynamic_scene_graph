@@ -1,27 +1,9 @@
-"""Driver-side shim around `utils.gripper_state.GripperPhaseTracker`.
-
-Lifted verbatim from scripts/visualize_ekf_tracking.py to make it
-importable from a library location. Behaviour unchanged.
-
-The ``GripperPhaseTracker`` import is deferred to instantiation time
-to break the import cycle:
-``utils.gripper_state`` → ``ekf_tracker.manipulation.grasp_owner_detector``
-→ ``ekf_tracker/__init__.py`` → ``ekf_tracker.api`` →
-``ekf_tracker.manipulation.gripper_state_inferrer`` → back to
-``utils.gripper_state``.
-"""
+"""Driver-side shim wrapping :class:`utils.gripper_state.GripperPhaseTracker`."""
 from __future__ import annotations
 
 
 class _GripperStateInferrer:
-    """Driver-side shim around :class:`utils.gripper_state.GripperPhaseTracker`.
-
-    The full FSM lives in ``utils/gripper_state.py``. This shim
-    wraps the production class with the tracker-coupling
-    (it constructs a ``GaussianEkfTrackerState`` adapter on each
-    ``step``) and exposes the legacy ``_held_obj_id`` attribute name
-    used by the rest of the driver.
-    """
+    """Driver-side wrapper that holds the :class:`GripperPhaseTracker` instance."""
     def __init__(self, *args, **kwargs):
         # Deferred import: see module docstring for the cycle this avoids.
         from utils.gripper_state import GripperPhaseTracker as _GripperPhaseTracker

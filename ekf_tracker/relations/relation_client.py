@@ -1,23 +1,4 @@
-"""Online relation-detector clients for the Bernoulli-EKF tracker.
-
-Two backends share a single interface:
-
-- :class:`RESTRelationClient` — wraps ``alpha_robot.client.SuppRelAfford``,
-  calling its ``detect_support_graph`` endpoint (3-class:
-  ``[parent, child, no_relation]``). Server URL defaults to the value in
-  ``arobot.configs.IP_CONFIGS["SuppRelAfford"]``.
-- :class:`LLMRelationClient` — prompts ``arobot.client.GPTChatBot`` with the
-  RGB frame + numbered bounding boxes; parses JSON back to the same tensor.
-
-The orchestrator consumes them through :func:`build_relation_client`, which
-defers remote construction (server ping / API key check) until first use and
-falls back to ``available=False`` on error so the tracker keeps running.
-
-Both ``detect()`` calls return the same ``(N, N)`` ``p_parent`` matrix in
-[0, 1], where ``p_parent[i, j]`` is the probability that object i is the
-physical parent of j (i.e., j rests on / in i). Orchestrator per-edge EMA
-(``RelationFilter``) handles temporal aggregation.
-"""
+"""Backend interface for REST and LLM relation detection; both return an :math:`(N, N)` ``p_parent`` matrix in :math:`[0, 1]`."""
 
 from __future__ import annotations
 
@@ -43,13 +24,7 @@ _relation_ctx = threading.local()
 
 
 def set_relation_context(frame_idx: Optional[int]) -> None:
-    """Stash a per-call frame index so ``CachedRelationClient`` can use
-    it as part of its cache key. The driver should call this immediately
-    before invoking ``client.detect(...)`` so the metadata is in scope
-    for the wrapped ``detect`` call.
-
-    Pass ``None`` to clear (cache is then disabled for the next call).
-    """
+    """Set thread-local context (frame index, dataset name) used in the cache key."""
     if frame_idx is None:
         if hasattr(_relation_ctx, "frame"):
             del _relation_ctx.frame
@@ -78,30 +53,12 @@ class RelationClient:
                bboxes_norm: np.ndarray,
                masks: Optional[List[np.ndarray]] = None,
                ) -> Optional[np.ndarray]:
-        """Return an ``(N, N)`` ``p_parent`` matrix, or ``None`` on failure.
-
-        ``masks`` (optional) is a list of N binary ``(H, W)`` arrays aligned
-        to ``bboxes_norm``. Backends that can use segmentation directly (LLM)
-        will consume them; the REST server reads bboxes only.
-        """
+        """Run the backend and return an :math:`(N, N)` ``p_parent`` matrix in :math:`[0, 1]`."""
         raise NotImplementedError
 
 
 class CachedRelationClient(RelationClient):
-    """Drop-in wrapper around any ``RelationClient`` that persists each
-    successful ``detect()`` result to disk and replays cached responses
-    on identical inputs.
-
-    Cache key fields:
-      * frame index from the thread-local context (set via
-        :func:`set_relation_context`);
-      * number of detections ``n``;
-      * per-detection bbox tuple, rounded to 3 decimals (suppresses
-        floating-point noise on otherwise-identical inputs).
-
-    Cache miss when the thread-local frame is ``None`` — the wrapped
-    call still runs but the result is not persisted.
-    """
+    """Wraps another :class:`RelationClient`, caching :meth:`detect` results to disk by (image hash, vocabulary)."""
 
     def __init__(self,
                  inner: RelationClient,
@@ -200,13 +157,7 @@ def build_relation_client(
 # ═════════════════════════════════════════════════════════════════════
 
 class RESTRelationClient(RelationClient):
-    """Wraps ``SuppRelAfford.detect_support_graph``.
-
-    Construction is lazy: the underlying ``SuppRelAfford`` client pings
-    ``/available_apis`` on ``__init__``, which fails if the server is
-    unreachable. We defer that to the first ``detect()`` call so the
-    tracker can boot when the server is offline.
-    """
+    """HTTP client for an external relation-detection service."""
 
     backend = "rest"
 
@@ -281,10 +232,7 @@ _LLM_SYSTEM = (
 
 
 class LLMRelationClient(RelationClient):
-    """Prompts a VLM (default: ``GPTChatBot``) for the same support-graph output.
-
-    Slower (~1-3 s per call) and non-deterministic but needs no model server.
-    """
+    """LLM-backed relation detector — sends the masked RGB and asks for ``on / in / under / contain`` parents."""
 
     backend = "llm"
 
@@ -413,21 +361,7 @@ _CONTOUR_PALETTE = [
 def _draw_mask_contours(rgb: Image.Image,
                         masks: List[np.ndarray],
                         thickness: int = 3) -> Image.Image:
-    """Paint each binary mask's contour (no fill) in a distinct bold color,
-    with its integer index drawn at the mask centroid.
-
-    Parameters
-    ----------
-    rgb : PIL image (any mode; converted to RGB).
-    masks : list of ``(H, W)`` arrays, convertible to boolean. Sizes must
-        match the image (or each other; the image is resized to match if
-        mismatched — but in the production pipeline the perception masks
-        are already at full image resolution).
-    thickness : pixel width of the drawn contour band.
-
-    Interior is left untouched (fully transparent) so the LLM still sees
-    the raw pixels inside each object.
-    """
+    """Overlay coloured contour outlines for each object mask onto an RGB image."""
     from PIL import ImageDraw
     from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 
@@ -506,12 +440,7 @@ def _load_font_compat(size: int):
 
 
 def decode_mask_b64(b64_png: str, size: Optional[Tuple[int, int]] = None) -> np.ndarray:
-    """Decode a base64-encoded PNG mask into an ``(H, W)`` bool array.
-
-    Optional ``size = (W, H)`` resizes the decoded mask if its dimensions
-    don't match the current frame. In the perception pipeline the masks
-    are already at full image resolution so the resize branch is skipped.
-    """
+    """Decode a base64-encoded PNG mask to a ``(H, W)`` uint8 array."""
     raw = base64.b64decode(b64_png)
     img = Image.open(io.BytesIO(raw))
     if size is not None and img.size != size:
@@ -520,12 +449,7 @@ def decode_mask_b64(b64_png: str, size: Optional[Tuple[int, int]] = None) -> np.
 
 
 def _load_openai_key() -> Optional[str]:
-    """Locate an OpenAI API key.
-
-    Search order:
-      1) ``OPENAI_API_KEY`` env var.
-      2) ``alpha_robot/arobot/_personal_tokens.json`` → ``"gpt"`` entry.
-    """
+    """Read the OpenAI API key from env or file."""
     env = os.environ.get("OPENAI_API_KEY")
     if env:
         return env
@@ -550,8 +474,7 @@ def _load_openai_key() -> Optional[str]:
 
 
 class _DirectOpenAIChat:
-    """Minimal OpenAI-SDK chat wrapper. Matches the one call site in
-    :meth:`LLMRelationClient.detect`: ``chat(conversation, image=...)``."""
+    """Minimal OpenAI chat-completions client used by :class:`LLMRelationClient`."""
 
     def __init__(self, api_key: str, model_name: str = "gpt-5.1"):
         from openai import OpenAI

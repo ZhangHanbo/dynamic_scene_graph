@@ -1,12 +1,4 @@
-"""Two-tier Gaussian-EKF tracker = `GaussianEkfTracker` + slow-tier smoothing.
-
-The fast tier (per-frame predict / associate / EKF update / Bernoulli /
-self-merge) is inherited unchanged from
-:class:`ekf_tracker.gaussian_ekf_tracker.GaussianEkfTracker`. The only
-addition is a slow-tier pass that calls
-:class:`ekf_tracker.factor_graph.PoseGraphOptimizer`.run on the current
-priors + relation graph, gated by :class:`TriggerConfig`.
-"""
+""":class:`TwoTierOrchestratorGaussian`: subclasses the fast tier and triggers :class:`PoseGraphOptimizer` slow-tier runs on grasp / release / new-object / periodic events."""
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -30,16 +22,7 @@ from utils.slam_interface import PoseEstimate
 
 
 class TwoTierOrchestratorGaussian(GaussianEkfTracker):
-    """`GaussianEkfTracker` + slow-tier pose-graph smoothing.
-
-    The fast tier runs every frame in `step()` (parent's `step`).
-    A slow-tier `PoseGraphOptimizer.run` fires only when
-    :meth:`_should_trigger` says so, or unconditionally via
-    :meth:`smooth`. The slow tier reads world-frame priors from
-    `state.collapsed_objects_world()`, optionally folds in relation
-    factors, optionally adds a held-object manipulation factor, and
-    writes posteriors back via `state.inject_posterior_world`.
-    """
+    """Fast-tier subclass that triggers :class:`PoseGraphOptimizer` slow-tier runs on grasp / release / new-object / periodic events."""
 
     def __init__(self,
                  K: np.ndarray,
@@ -180,19 +163,7 @@ class TwoTierOrchestratorGaussian(GaussianEkfTracker):
                    held_oid: Optional[int],
                    T_bg: Optional[np.ndarray],
                    T_bc: Optional[np.ndarray]) -> OptimizationResult:
-        """Optimise priors + relation factors + (optional) held-object factor.
-
-        Inputs:
-          * priors: world-frame collapse of the fast-tier posterior.
-          * relations: passed-in `relation_edges` (typed as RelationEdge,
-            or any object exposing `.parent`, `.child`, `.relation_type`,
-            `.score`).
-          * manipulation: only when `held_oid is not None`, both `T_bc`
-            and `T_bg` are supplied, and the held oid has a stored
-            chain entry that pins T_oe.
-
-        Posteriors are written back via `state.inject_posterior_world`.
-        """
+        """Run one slow-tier optimization pass and inject the posterior back into the fast-tier state."""
         T_wb = np.asarray(T_wb, dtype=np.float64)
         slam_pose = PoseEstimate(T=T_wb, cov=self._fast_tier_noise["tiny_cov"])
         priors: Dict[int, PoseEstimate] = dict(

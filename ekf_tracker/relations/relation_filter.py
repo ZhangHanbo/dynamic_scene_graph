@@ -1,7 +1,4 @@
-"""Exponential moving-average filter over scene-graph edges.
-
-Smooths the binary present/absent signal of relation detections.
-"""
+""":class:`RelationFilter` — exponential moving average over edge scores, threshold-based emit, per-edge prune on staleness."""
 from __future__ import annotations
 
 from typing import Dict, List
@@ -10,19 +7,7 @@ from ekf_tracker.factor_graph import RelationEdge
 
 
 class RelationFilter:
-    """Exponential moving-average filter over scene-graph edges.
-
-    Raw edge scores flicker frame-to-frame because the geometric
-    relation test is noisy (random mock point clouds, bbox jitter).
-    This filter smooths the binary present/absent signal into a
-    stable 0-or-1 output.
-
-    Per-edge EMA:
-        ema(t) = α · raw(t) + (1 − α) · ema(t − 1)
-
-    Output: emit the edge (score=1) when ema ≥ threshold, suppress
-    otherwise. An edge not detected this frame gets raw=0.
-    """
+    r"""EMA over per-edge scores: :math:`\bar s \leftarrow \alpha s + (1-\alpha)\bar s`, emit when :math:`\bar s > \tau`, prune on staleness."""
 
     def __init__(self, *, alpha: float, threshold: float,
                  prune_threshold: float):

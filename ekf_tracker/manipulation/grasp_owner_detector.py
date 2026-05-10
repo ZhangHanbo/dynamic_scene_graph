@@ -1,28 +1,4 @@
-"""Robot-agnostic grasp-owner detection.
-
-Given a per-frame snapshot (gripper geometry + state, current
-detections, depth image, camera intrinsics, base→world / base→camera
-extrinsics), decide which detection (and tracker oid) is currently
-being grasped by the gripper.
-
-Three signals are considered, in priority order:
-
-    1. **Perception override** — if any detection carries
-       ``det["grasp_owner_pid"]`` or ``det["is_grasped"] == True``
-       (typically populated by a downstream grasp-detection algorithm),
-       trust that. Used when the perception pipeline already knows.
-    2. **Geometric containment** — back-project each detection's mask
-       through the depth image, transform to gripper frame, and count
-       how many points fall inside the gripper's
-       ``inside_volume_g(state)`` AABB. The detection with the highest
-       count above a threshold wins. Tiebreaker: smallest mask area
-       (the smaller of two co-grasped objects, e.g., apple-on-tray).
-    3. **Fallback** — nearest live tracker centroid to the EE position
-       within a wider radius, mirroring the legacy behaviour.
-
-The detector is robot-agnostic; it accepts any ``GripperGeometry``
-subclass and never inspects robot-specific fields.
-"""
+""":class:`GraspOwnerDetector` — three-tier (perception override → URDF inside-jaws containment → fallback) grasp-ownership decision."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,18 +12,7 @@ from perception.icp_pose import _back_project
 
 @dataclass
 class HeldDecision:
-    """Outcome of one grasp-owner inference call.
-
-    Fields
-    ------
-    held_oid       : tracker oid of the held object (or None if no track).
-    held_pid       : perception id of the chosen detection (or None).
-    inside_count   : number of mask points found inside the gripper
-                     volume. -1 when chosen via perception override; 0
-                     when chosen via fallback.
-    source         : 'perception' | 'geometric' | 'fallback' | 'none'.
-    note           : optional human-readable diagnostic.
-    """
+    """Result of one grasp-ownership decision: held oid (or ``None``), source (``perception`` / ``geometric`` / ``fallback``), and confidence."""
     held_oid:     Optional[int]
     held_pid:     Optional[Any] = None
     inside_count: int = 0
@@ -56,23 +21,7 @@ class HeldDecision:
 
 
 class GraspOwnerDetector:
-    """Decide which object is being grasped each call.
-
-    Parameters
-    ----------
-    gripper :
-        A `GripperGeometry` subclass for the active robot.
-    min_inside_count :
-        Minimum number of mask points inside the gripper volume for a
-        detection to be considered for the geometric signal.
-    fallback_radius_m :
-        For the legacy fallback: pick the nearest live track within
-        this Euclidean radius of the EE position in world frame.
-    perception_keys :
-        Names checked on each detection dict for the perception
-        override signal. The first non-None / non-False match wins.
-        Default: ``("grasp_owner_pid", "is_grasped")``.
-    """
+    """Three-tier grasp-ownership: perception override → URDF inside-jaws containment → nearest-live-track fallback."""
 
     def __init__(self,
                  gripper: GripperGeometry,
@@ -161,13 +110,7 @@ class GraspOwnerDetector:
                          T_bc: np.ndarray,
                          state: Dict[str, Any],
                          ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Score every detection on inside-gripper-count and pick the winner.
-
-        Camera→gripper transform is built directly from the kinematic
-        chain ``T_gc = inv(T_bg) · T_bc``. This avoids routing through
-        world (T_wb), which would inject SLAM noise into a purely
-        proprio-kinematic relation.
-        """
+        """Pick the track whose point cloud is most contained by the gripper's inside-jaws AABB."""
         box = self.gripper.inside_volume_g(state)
         T_gc = np.linalg.inv(T_bg) @ T_bc
         # Each entry: (inside_count, inside_frac, mask_area, det)
@@ -207,12 +150,7 @@ class GraspOwnerDetector:
                           det: Optional[Dict[str, Any]],
                           depth: Optional[np.ndarray],
                           ) -> Optional[int]:
-        """Find the live tracker oid whose ``sam2_tau`` matches ``pid``.
-
-        If no track owns the pid, force-admit the detection: the gripper
-        closing is strong physical evidence the object exists, so we
-        bypass the policy gate and birth a new track on the spot.
-        """
+        """Map a perception ``object_id`` to a tracker oid via the SAM2 tau table."""
         if pid is None:
             return None
         sam2_tau = tracker_state.sam2_tau()
@@ -232,12 +170,7 @@ class GraspOwnerDetector:
                              T_wb: np.ndarray,
                              T_bg: Optional[np.ndarray],
                              ) -> Optional[int]:
-        """Pick the live track whose nearest surface point is closest
-        to the EE position in world frame, within
-        ``fallback_radius_m``. Falls back to centroid distance for
-        tracks that haven't accumulated an ICP reference cloud yet
-        (fresh births before their first ICP run).
-        """
+        """Track whose mean is nearest the gripper TCP within ``held_meas_radius_m``."""
         if T_bg is None:
             return None
         ee_world = (T_wb @ T_bg)[:3, 3]
@@ -274,39 +207,23 @@ class GraspOwnerDetector:
 
 
 class TrackerState:
-    """Adapter that exposes the small subset of tracker state the
-    detector needs, without depending on a specific tracker class.
-
-    Subclass and implement these three methods to plug in any tracker.
-    The default impl wraps ``GaussianEkfTracker`` from
-    ``ekf_tracker/gaussian_ekf_tracker.py``.
-    """
+    """Read-only adapter exposing the data the grasp-owner detector needs from a tracker."""
     def sam2_tau(self) -> Dict[int, int]:
         """Map oid → perception (SAM2) id stored on each track."""
         raise NotImplementedError
 
     def iter_world_centroids(self):
-        """Yield ``(oid, mu_w)`` for every live track. ``mu_w`` is a
-        length-3 numpy array (world-frame translation)."""
+        r"""Iterate :math:`(\text{oid}, \text{world centroid})` for every live track."""
         raise NotImplementedError
 
     def force_admit(self,
                     det: Dict[str, Any],
                     depth: np.ndarray) -> Optional[int]:
-        """Birth a new track for `det`, bypassing policy gates.
-        Return the new oid (or None on failure)."""
+        """Force the tracker to admit a candidate track from a perception override."""
         raise NotImplementedError
 
     def iter_world_pointclouds(self):
-        """Yield ``(oid, points_w)`` for every live track that has a
-        stored ICP reference cloud, transformed to world frame.
-        ``points_w`` is an ``(N, 3)`` numpy array.
-
-        Optional — the default implementation raises
-        :class:`NotImplementedError`; the grasp-owner detector's
-        nearest-point fallback gracefully falls through to centroid
-        distance for adapters that don't implement it.
-        """
+        r"""Iterate :math:`(\text{oid}, \text{world point cloud})` for every live track."""
         raise NotImplementedError
 
 
@@ -328,12 +245,7 @@ class GaussianEkfTrackerState(TrackerState):
             yield int(oid), mu_w
 
     def iter_world_pointclouds(self):
-        """Per-track ICP reference clouds transformed to world frame.
-
-        Skips tracks without a stored ref cloud (fresh births before
-        their first ICP run); the caller falls back to centroid for
-        those.
-        """
+        """Iterate world-frame point clouds backed by the Gaussian fast tier."""
         pose_est = getattr(self._t, "pose_est", None)
         if pose_est is None:
             return

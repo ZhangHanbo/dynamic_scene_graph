@@ -1,25 +1,4 @@
-"""Online relation-graph orchestrator.
-
-Wraps a relation backend (LLM or REST), throttles re-detection via the
-trigger gate in :mod:`ekf_tracker.relations.relation_utils`, smooths per-call
-edge scores via :class:`ekf_tracker.orchestrator.RelationFilter`'s EMA,
-and exposes the current filtered edges so callers can run
-:func:`ekf_tracker.relations.relation_utils.expand_held_with_relations`.
-
-Conventions
------------
-- Edge convention follows ``expand_held_with_relations``:
-  ``parent = supported``, ``child = supporter``. The LLM/REST backend
-  reports ``i is parent of j`` to mean ``j rests on i`` (i is the
-  supporter); we swap to match the expand convention.
-- The backend is constructed lazily on first ``maybe_update`` call so
-  runs that never enter a triggering frame don't pay the LLM-init
-  cost.
-- After a self-merge, callers MUST invoke
-  :meth:`RelationOrchestrator.remap_after_merges` so EMA keys + emitted
-  edges referring to dropped oids get rewritten to the keepers; without
-  this, expansion silently fails on the next frame.
-"""
+""":class:`RelationOrchestrator`: triggered relation builder with EMA smoothing; remaps EMA keys after self-merges."""
 from __future__ import annotations
 
 import os
@@ -38,25 +17,7 @@ from ekf_tracker.relations.relation_utils import (
 
 
 class RelationOrchestrator:
-    """Triggered relation-graph builder with EMA smoothing.
-
-    Public API:
-        - ``maybe_update(frame, rgb, detections, det_to_oid,
-          current_phase, current_oids)``: decide whether to fire the
-          backend; if so, query it, update the EMA, and refresh
-          ``self.edges``. Returns a summary dict for diagnostics.
-        - ``edges``: the currently-emitted filtered edges
-          (``List[RelationEdge]``).
-        - ``remap_after_merges(merges)``: rewrite EMA keys + edges so
-          dropped oids are replaced by their keep counterparts after
-          a self-merge pass.
-
-    Backends:
-        - ``"llm"``: :class:`ekf_tracker.relations.relation_client.LLMRelationClient`
-          (default).
-        - ``"rest"``: :class:`ekf_tracker.relations.relation_client.RESTRelationClient`.
-        - ``"none"``: disable; ``maybe_update`` becomes an EMA decay only.
-    """
+    """Triggered relation builder with EMA smoothing; remaps EMA keys after self-merges."""
 
     def __init__(
         self,
@@ -142,9 +103,7 @@ class RelationOrchestrator:
         held_oid: Optional[int] = None,  # accepted for API compat; unused
         live_tracks: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Decide whether to re-call the backend; if so, do it; update
-        state. Returns a summary dict (fired flag, edge counts, etc.).
-        """
+        """Re-run the relation backend if the trigger fires, then EMA-smooth the resulting edges."""
         del held_oid, live_tracks  # geometric fallback removed
 
         fired = should_recompute_relations(
@@ -267,10 +226,7 @@ class RelationOrchestrator:
 
     def remap_after_merges(self,
                             merges: List[Dict[str, Any]]) -> None:
-        """Rewrite EMA keys + filtered edges so dropped oids are
-        replaced by their keep counterparts. Self-loops collapse and
-        duplicate keys merge by max.
-        """
+        """Re-key the EMA state after fast-tier track self-merges."""
         if not merges:
             return
         drop_to_keep: Dict[int, int] = {}

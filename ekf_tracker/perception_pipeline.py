@@ -1,24 +1,4 @@
-"""Live OWL + SAM2-streaming detection pipeline.
-
-Used by ``EkfTracker.detect()`` to produce per-frame detections with
-**stable cross-frame ``object_id``** values that the EKF consumes via
-``sam2_tau``. Mirrors the algorithm of
-``scripts/rosbag2dataset/sam2/sam2_client.py:track_dataset_streaming``
-without the offline-only features (debug capture, dormant-track
-window, periodic GPU-memory reset, rolling frame buffer).
-
-Public surface:
-
-    pipe = LiveDetectionPipeline(owl_url=..., sam2_url=..., cfg=...)
-    pipe.start()
-    for rgb in frames:
-        dets = pipe.step(rgb, vocabulary)
-    pipe.close()
-
-Each detection dict matches the schema produced by
-``scripts/visualize_ekf_tracking.py:_load_detection_json``:
-    {id, object_id, label, score, mean_score, n_obs, labels, box, mask}
-"""
+""":class:`LiveDetectionPipeline` — OWLv2 + SAM2-streaming detector with stable cross-frame ``object_id``."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -52,11 +32,7 @@ from scripts.rosbag2dataset.server_configs import (
 
 @dataclass
 class LiveDetectionConfig:
-    """Tuning knobs for the live OWL + SAM2 streaming pipeline.
-
-    Defaults match ``track_dataset_streaming`` so live-vs-cached
-    output is contract-equivalent on the same trajectory.
-    """
+    """Configuration for :class:`LiveDetectionPipeline` (OWL + SAM2 servers, vocabulary, score thresholds)."""
     # Hungarian / fallback matching.
     hungarian_max_cost: float = 0.7
     hungarian_label_penalty: float = 0.2
@@ -75,13 +51,7 @@ class LiveDetectionConfig:
 
 @dataclass
 class LiveDetectionPipeline:
-    """Stateful per-trajectory pipeline.
-
-    Owns one ``SAM2StreamClient`` session, the per-track ``TrackState``
-    dict, and the frame counter. Pass an instance in/out of
-    ``EkfTracker.detect`` as the ``history`` argument to thread the
-    session across frames.
-    """
+    """OWLv2 + SAM2-streaming detector with stable cross-frame ``object_id``."""
     owl_url: str = OWL_SERVER_URL
     sam2_url: str = SAM2_SERVER_URL
     cfg: LiveDetectionConfig = field(default_factory=LiveDetectionConfig)
@@ -94,9 +64,7 @@ class LiveDetectionPipeline:
     last_prop: Optional[PropagatedFrame] = None
 
     def start(self) -> "LiveDetectionPipeline":
-        """Open the SAM2 streaming session. Hard-errors if the server
-        is unreachable (no cached fallback).
-        """
+        """Boot the OWL and SAM2 sessions for a new trajectory."""
         if self.sam2 is None:
             self.sam2 = SAM2StreamClient(server_url=self.sam2_url)
             self.sam2.start()
@@ -121,12 +89,7 @@ class LiveDetectionPipeline:
     def step(self,
              rgb: np.ndarray,
              vocabulary: List[str]) -> List[Dict[str, Any]]:
-        """Run one frame: SAM2 propagate → OWL → match/seed/merge → emit.
-
-        Returns a list of detection dicts (schema below). Each dict's
-        ``id`` is the SAM2 tracklet ID — stable across frames for
-        the same physical object.
-        """
+        """Run one frame: OWL boxes → SAM2 mask refinement → cross-frame tracklet IDs."""
         if self.sam2 is None:
             raise RuntimeError(
                 "LiveDetectionPipeline.start() must be called before step()")
@@ -276,11 +239,7 @@ class LiveDetectionPipeline:
     def _track_entries_for_match(
             self, prop: PropagatedFrame
             ) -> List[Tuple[int, Optional[np.ndarray], Optional[List[int]]]]:
-        """Active-track entries for the Hungarian cost matrix.
-
-        Live-mode skips dormant-track matching (which the offline driver
-        uses to bridge brief mask drop-outs across up to 30 frames).
-        """
+        """Build the per-track entry list passed to SAM2 for matching."""
         entries: List[Tuple[int, Optional[np.ndarray], Optional[List[int]]]] = []
         for oid, mask in prop.object_masks.items():
             if oid not in self.tracks:
@@ -350,12 +309,7 @@ class LiveDetectionPipeline:
                   owl: OwlDet,
                   rgb: np.ndarray,
                   client_idx: int) -> PropagatedFrame:
-        """Add one OWL detection as a new track and commit it.
-
-        Mirrors ``track_dataset_streaming.seed_one``: each prompt gets
-        its own ``frame_idx = self.frame_count`` and is immediately
-        committed by a ``frame()`` call so SAM2 advances + registers.
-        """
+        """Seed a single SAM2 tracklet from an OWL box."""
         obj_id = self.sam2.add_box(frame_idx=self.frame_count, box=owl.box)
         self.tracks[obj_id] = TrackState(
             label=owl.label, first_frame=client_idx, score=owl.score)
@@ -369,9 +323,7 @@ class LiveDetectionPipeline:
 
     def _emit_detections(self,
                          prop: PropagatedFrame) -> List[Dict[str, Any]]:
-        """Build the final per-frame detection list in the EKF-consumed
-        schema. Uses each track's EMA-smoothed mask thresholded at 0.5,
-        per-track best-label, and rich label statistics."""
+        """Emit the per-frame detection dict list consumed by :class:`EkfTracker.step`."""
         out: List[Dict[str, Any]] = []
         for oid, _mask in prop.object_masks.items():
             if oid not in self.tracks:
